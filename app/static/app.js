@@ -646,6 +646,9 @@ async function startStreaming() {
 
     await audioStreamer.start((pcmChunk) => {
       if (websocket && websocket.readyState === WebSocket.OPEN) {
+        if (audioPlayer && audioPlayer.isPlaying) {
+          return; // Prevent speaker echo from triggering model interruption
+        }
         websocket.send(pcmChunk);
         chunksSent++;
         if (chunksSent % 20 === 0 && currentAssistantState === "listening") {

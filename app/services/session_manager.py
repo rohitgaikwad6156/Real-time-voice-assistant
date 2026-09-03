@@ -514,7 +514,6 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
                         session.audio_chunks_received,
                         session.total_bytes_received,
                     )
-                    await session.end_audio_stream()
                     await session.send_status(
                         status="stopped",
                         chunks=session.audio_chunks_received,
