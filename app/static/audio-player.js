@@ -40,7 +40,11 @@ class AudioPlayer {
   async _ensureContext() {
     if (!this.audioContext || this.audioContext.state === "closed") {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
-      this.audioContext = new AudioContextClass({ sampleRate: this.sampleRate });
+      try {
+        this.audioContext = new AudioContextClass();
+      } catch (e) {
+        this.audioContext = new AudioContextClass({ sampleRate: this.sampleRate });
+      }
       this.nextPlayTime = 0;
     }
 

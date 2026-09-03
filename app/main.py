@@ -1,8 +1,11 @@
+import logging
 from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
+
+logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
 
 from app.services.session_manager import handle_voice_websocket
 from app.services.voice_pipeline import answer_from_text, transcribe_audio, generate_speech

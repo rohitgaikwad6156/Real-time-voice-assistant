@@ -496,7 +496,7 @@ function handleServerMessage(message) {
       }
     } else {
       const bubble = getOrCreateAssistantBubble();
-      bubble.textContent = text;
+      bubble.textContent += text;
     }
     scrollConversationToBottom();
   }
@@ -595,6 +595,25 @@ function handleServerMessage(message) {
 // Real-Time Microphone Streaming
 // ==============================================================================
 
+async function ensureAudioPlayerReady() {
+  if (!audioPlayer) {
+    audioPlayer = new AudioPlayer({
+      sampleRate: 24000,
+      onPlaybackStarted: () => setAssistantState("speaking"),
+      onPlaybackEnded: () => {
+        if (currentAssistantState === "speaking") {
+          setAssistantState(isStreaming ? "listening" : "idle");
+        }
+      },
+    });
+  }
+  try {
+    await audioPlayer._ensureContext();
+  } catch (err) {
+    console.warn("[AudioPlayer] Context resume on gesture failed:", err);
+  }
+}
+
 async function startStreaming() {
   if (!websocket || websocket.readyState !== WebSocket.OPEN) {
     showToast("Connecting to server. Please wait a moment...");
@@ -602,17 +621,14 @@ async function startStreaming() {
     return;
   }
 
+  await ensureAudioPlayerReady();
+
   if (!audioStreamer) {
     audioStreamer = new AudioStreamer({
       targetSampleRate: 16000,
       bufferSize: 2048,
       onVoiceActivity: (rms) => {
         currentVoiceEnergy = rms;
-
-        // Barge-in detection: user speaks while assistant audio is playing
-        if (audioPlayer && audioPlayer.isPlaying && rms > 0.038) {
-          handleBargeIn("local_speech");
-        }
       },
     });
   }
@@ -632,6 +648,9 @@ async function startStreaming() {
       if (websocket && websocket.readyState === WebSocket.OPEN) {
         websocket.send(pcmChunk);
         chunksSent++;
+        if (chunksSent % 20 === 0 && currentAssistantState === "listening") {
+          setAssistantState("listening", `Listening (${chunksSent} chunks sent)`);
+        }
       }
     });
 
@@ -663,6 +682,7 @@ function stopStreaming() {
 
 if (recordButton) {
   recordButton.onclick = async () => {
+    await ensureAudioPlayerReady();
     if (isStreaming) {
       stopStreaming();
     } else {
@@ -673,6 +693,7 @@ if (recordButton) {
 
 if (voiceOrb) {
   voiceOrb.onclick = async () => {
+    await ensureAudioPlayerReady();
     if (isStreaming) {
       stopStreaming();
     } else {
@@ -685,7 +706,8 @@ if (voiceOrb) {
 // Text Input Handling
 // ==============================================================================
 
-function handleSendText() {
+async function handleSendText() {
+  await ensureAudioPlayerReady();
   const text = (textInput?.value || "").trim();
   if (!text) return;
 
@@ -712,10 +734,10 @@ if (textButton) {
 }
 
 if (textInput) {
-  textInput.addEventListener("keydown", (e) => {
+  textInput.addEventListener("keydown", async (e) => {
     if (e.key === "Enter") {
       e.preventDefault();
-      handleSendText();
+      await handleSendText();
     }
   });
 }
@@ -728,4 +750,13 @@ window.addEventListener("DOMContentLoaded", () => {
   initWaveform();
   setAssistantState("idle");
   initWebSocket();
+
+  // Unlock AudioContext on very first page click/tap
+  document.addEventListener(
+    "click",
+    () => {
+      ensureAudioPlayerReady();
+    },
+    { once: true }
+  );
 });

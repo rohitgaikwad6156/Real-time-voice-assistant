@@ -70,7 +70,11 @@ class AudioStreamer {
       if (!AudioContextClass) {
         throw new Error("Web Audio API is not supported in this browser.");
       }
-      this.audioContext = new AudioContextClass({ sampleRate: this.targetSampleRate });
+      try {
+        this.audioContext = new AudioContextClass();
+      } catch (e) {
+        this.audioContext = new AudioContextClass({ sampleRate: this.targetSampleRate });
+      }
       if (this.audioContext.state === "suspended") {
         await this.audioContext.resume();
       }
@@ -80,6 +84,8 @@ class AudioStreamer {
       // 3. Create audio processing graph
       this.sourceNode = this.audioContext.createMediaStreamSource(this.mediaStream);
       this.processorNode = this.audioContext.createScriptProcessor(this.bufferSize, 1, 1);
+      // Retain reference on window so V8 garbage collection does not pause onaudioprocess
+      window._activeAudioProcessor = this.processorNode;
 
       // Mute gain node to prevent speaker acoustic feedback
       this.muteNode = this.audioContext.createGain();
@@ -93,7 +99,7 @@ class AudioStreamer {
       if (!this.isRecording) return;
       const inputChannelData = event.inputBuffer.getChannelData(0);
 
-      // Calculate audio power (RMS) for real-time barge-in speech detection
+      // Calculate audio power (RMS) for real-time visualizer and energy monitoring
       if (this.onVoiceActivity) {
         let sum = 0;
         for (let i = 0; i < inputChannelData.length; i++) {
@@ -133,6 +139,7 @@ class AudioStreamer {
       this.processorNode.disconnect();
       this.processorNode = null;
     }
+    window._activeAudioProcessor = null;
 
     if (this.sourceNode) {
       this.sourceNode.disconnect();
