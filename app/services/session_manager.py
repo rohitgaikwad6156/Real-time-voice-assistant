@@ -125,13 +125,12 @@ class VoiceSession:
         """Continuously receive events from Gemini Live API and forward to the client."""
         logger.info("Session %s started Gemini receive loop.", self.session_id)
         try:
-            if self.gemini_session is None:
-                return
-
-            async for message in self.gemini_session.receive():
-                if not self.is_active:
-                    break
-                await self._process_gemini_message(message)
+            while self.is_active and self.gemini_session is not None:
+                async for message in self.gemini_session.receive():
+                    if not self.is_active:
+                        break
+                    await self._process_gemini_message(message)
+                logger.info("Session %s turn ended. Listening for next turn...", self.session_id)
 
         except asyncio.CancelledError:
             logger.debug("Gemini receive loop cancelled for %s", self.session_id)
@@ -217,6 +216,7 @@ class VoiceSession:
                     if inline_data is not None and inline_data.data:
                         b64_audio = base64.b64encode(inline_data.data).decode("utf-8")
                         mime_type = inline_data.mime_type or "audio/pcm;rate=24000"
+                        logger.info("Session %s streaming audio chunk: %d bytes (turn_id=%d).", self.session_id, len(inline_data.data), self.turn_id)
                         await self.send_json({
                             "type": "audio",
                             "data": b64_audio,
@@ -226,6 +226,7 @@ class VoiceSession:
 
             # 5. Turn complete event
             if getattr(sc, "turn_complete", False):
+                logger.info("Session %s received turn_complete for turn_id=%d.", self.session_id, self.turn_id)
                 await self.send_json({
                     "type": "turn_complete",
                     "turn_id": self.turn_id,

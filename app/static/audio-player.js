@@ -37,7 +37,7 @@ class AudioPlayer {
   /**
    * Ensure the Web Audio API AudioContext is initialized and in the 'running' state.
    */
-  async _ensureContext() {
+  _ensureContext() {
     if (!this.audioContext || this.audioContext.state === "closed") {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
       try {
@@ -49,7 +49,7 @@ class AudioPlayer {
     }
 
     if (this.audioContext.state === "suspended") {
-      await this.audioContext.resume();
+      this.audioContext.resume().catch(() => {});
     }
   }
 
@@ -59,7 +59,7 @@ class AudioPlayer {
    * @param {ArrayBuffer|Uint8Array|Int16Array} chunk Raw PCM 16-bit little-endian audio bytes.
    * @param {number} [turnId] Generation sequence ID to guard against race condition stale audio.
    */
-  async playChunk(chunk, turnId = null) {
+  playChunk(chunk, turnId = null) {
     if (!chunk) return;
 
     // Check against stale turns (barge-in guard)
@@ -94,7 +94,7 @@ class AudioPlayer {
       arrayBuffer = arrayBuffer.slice(0, validByteLength);
     }
 
-    await this._ensureContext();
+    this._ensureContext();
 
     // 3. Convert Int16 little-endian samples to Float32 [-1.0, 1.0]
     const sampleCount = validByteLength / 2;
