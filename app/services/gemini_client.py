@@ -61,10 +61,10 @@ class GeminiLiveConfig:
 
     api_key: Optional[str] = None
     model: str = field(
-        default_factory=lambda: os.getenv("GEMINI_LIVE_MODEL", DEFAULT_LIVE_MODEL)
+        default_factory=lambda: os.getenv("GEMINI_LIVE_MODEL") or os.getenv("GEMINI_MODEL") or DEFAULT_LIVE_MODEL
     )
     voice_name: str = field(
-        default_factory=lambda: os.getenv("GEMINI_VOICE_NAME", DEFAULT_VOICE_NAME)
+        default_factory=lambda: os.getenv("GEMINI_VOICE_NAME") or os.getenv("GEMINI_VOICE") or DEFAULT_VOICE_NAME
     )
     response_modalities: List[str] = field(
         default_factory=lambda: list(DEFAULT_MODALITIES)

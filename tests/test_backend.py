@@ -783,3 +783,29 @@ class TestDatabaseIsolation:
         assert len(reminders) == 1
         assert reminders[0]["title"] == "Only in this test"
 
+
+class TestOpenAILazyInitialization:
+    """Tests confirming the application starts up safely without OPENAI_API_KEY."""
+
+    def test_openai_client_lazy_error_on_call(self, monkeypatch):
+        """Accessing client methods without OPENAI_API_KEY raises clean RuntimeError."""
+        import app.services.openai_client as oac
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        oac._client = None
+
+        with pytest.raises(RuntimeError, match="OPENAI_API_KEY is missing"):
+            _ = oac.client.audio
+
+    def test_text_pipeline_returns_503_when_openai_key_missing(self, monkeypatch):
+        """POST /api/text returns HTTP 503 with helpful message when OPENAI_API_KEY is missing."""
+        import app.services.openai_client as oac
+        monkeypatch.setenv("OPENAI_API_KEY", "")
+        oac._client = None
+
+        from app.main import app
+        client = TestClient(app)
+        response = client.post("/api/text", json={"text": "Hello"})
+        assert response.status_code == 503
+        assert "OPENAI_API_KEY is missing" in response.json()["detail"]
+
+

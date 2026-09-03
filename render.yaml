@@ -1,13 +1,19 @@
 services:
   - type: web
     name: real-time-voice-assistant
-    env: python
+    runtime: python
     buildCommand: pip install -r requirements.txt
-    startCommand: uvicorn app.main:app --host 0.0.0.0 --port $PORT
+    startCommand: uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}
+    healthCheckPath: /health
     envVars:
       - key: GEMINI_API_KEY
         sync: false
-      - key: GEMINI_MODEL
-        value: gemini-2.0-flash-exp
-      - key: GEMINI_VOICE
-        value: Aoede
+      - key: GEMINI_LIVE_MODEL
+        value: gemini-2.5-flash-native-audio-latest
+      - key: GEMINI_VOICE_NAME
+        value: Puck
+      - key: WEATHER_API_PROVIDER
+        value: open-meteo
+      - key: WEATHER_API_KEY
+        value: open-meteo
+

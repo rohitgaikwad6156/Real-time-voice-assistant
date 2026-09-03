@@ -37,9 +37,12 @@ def text_pipeline(request: TextRequest):
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Please enter some text.")
-    answer = answer_from_text(text)
-    audio = generate_speech(answer)
-    return {"transcript": text, "answer": answer, "audio_url": f"/api/audio/{audio.name}"}
+    try:
+        answer = answer_from_text(text)
+        audio = generate_speech(answer)
+        return {"transcript": text, "answer": answer, "audio_url": f"/api/audio/{audio.name}"}
+    except RuntimeError as err:
+        raise HTTPException(status_code=503, detail=str(err))
 
 @app.post("/api/voice")
 async def voice_pipeline(audio: UploadFile = File(...)):
@@ -54,6 +57,8 @@ async def voice_pipeline(audio: UploadFile = File(...)):
         answer = answer_from_text(transcript)
         output = generate_speech(answer)
         return {"transcript": transcript, "answer": answer, "audio_url": f"/api/audio/{output.name}"}
+    except RuntimeError as err:
+        raise HTTPException(status_code=503, detail=str(err))
     finally:
         temp.unlink(missing_ok=True)
 
