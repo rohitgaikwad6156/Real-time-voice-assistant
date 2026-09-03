@@ -1,10 +1,10 @@
 {
-  "outputDirectory": "app/static",
+  "framework": null,
   "cleanUrls": true,
   "rewrites": [
     {
       "source": "/static/:path*",
-      "destination": "/:path*"
+      "destination": "/app/static/:path*"
     }
   ]
 }
