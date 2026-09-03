@@ -1,5 +1,12 @@
 # Real-Time Voice Assistant
 
+**Live Production Deployments:**
+- 🌐 **Frontend (Vercel):** [https://real-time-voice-assistant-lovat.vercel.app](https://real-time-voice-assistant-lovat.vercel.app)
+- ⚙️ **Backend API (Render):** [https://real-time-voice-assistant-9bh1.onrender.com](https://real-time-voice-assistant-9bh1.onrender.com)
+- 🔌 **WebSocket Endpoint:** `wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice`
+
+---
+
 A production-quality, full-stack real-time voice assistant built with Google Gemini Live API,
 FastAPI, WebSockets, and the Web Audio API. Speak a question, receive a spoken answer — with
 live weather look-ups, reminder creation, and personal note search powered by Gemini's native
@@ -540,24 +547,27 @@ Configure these in the Render Dashboard (**Service** > **Environment**):
 
 ### 2. Vercel Deployment (Frontend Only)
 
+- **Live Frontend URL:** [https://real-time-voice-assistant-lovat.vercel.app](https://real-time-voice-assistant-lovat.vercel.app)
+
 The frontend is configured via [vercel.json](file:///d:/Real%20time%20voice%20assistant/vercel.json):
 ```json
 {
-  "version": 2,
+  "framework": null,
   "cleanUrls": true,
-  "routes": [
-    { "src": "/", "dest": "/app/static/index.html" },
-    { "src": "/static/(.*)", "dest": "/app/static/$1" },
-    { "src": "/(.*)", "dest": "/app/static/$1" }
+  "rewrites": [
+    {
+      "source": "/static/:path*",
+      "destination": "/:path*"
+    }
   ]
 }
 ```
 
 #### Vercel Dashboard Project Settings:
-1. **Framework Preset:** `Other` (Static Site)
-2. **Root Directory:** `./` (or leave default root)
-3. **Build Command:** Leave empty / disabled (no npm/build step needed)
-4. **Output Directory:** Leave default or `app/static`
+1. **Framework Preset:** `Other` (Static Site / framework: null)
+2. **Root Directory:** `./` (default root)
+3. **Build Command:** Leave empty / disabled (pure static HTML/CSS/JS)
+4. **Output Directory:** Leave default
 5. **Install Command:** Leave empty / disabled
 6. **Environment Variables:** No private secrets required!
 
