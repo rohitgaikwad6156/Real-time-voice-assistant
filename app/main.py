@@ -19,7 +19,10 @@ class TextRequest(BaseModel):
 
 @app.get("/")
 def home():
-    return FileResponse(BASE_DIR / "static" / "index.html")
+    return FileResponse(
+        BASE_DIR / "static" / "index.html",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
+    )
 
 @app.get("/health")
 def health():
