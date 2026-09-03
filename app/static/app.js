@@ -470,10 +470,14 @@ function handleServerMessage(message) {
   // 2. Interruption Event (Server-side Gemini VAD barge-in notification)
   else if (message.type === "interrupted") {
     console.log("[WebSocket] Server reported interruption. Turn ID:", message.turn_id);
-    if (audioPlayer) {
-      audioPlayer.stop(message.turn_id);
+    // Only abort audio playback if the user is actively speaking over the assistant (true barge-in).
+    // Server-side turn-end signals must not kill the assistant's speech.
+    if (isStreaming && currentVoiceEnergy > 0.03) {
+      if (audioPlayer) {
+        audioPlayer.stop(message.turn_id);
+      }
+      handleBargeIn("server");
     }
-    handleBargeIn("server");
   }
 
   // 3. Real-Time Speech Transcription (USER or ASSISTANT)

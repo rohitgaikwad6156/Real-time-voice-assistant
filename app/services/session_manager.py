@@ -152,7 +152,7 @@ class VoiceSession:
             sc = message.server_content
 
             # Check for server-side interruption from Gemini Live API
-            if getattr(sc, "interrupted", False):
+            if getattr(sc, "interrupted", False) and not getattr(sc, "turn_complete", False):
                 self.turn_id += 1
                 logger.info(
                     "Session %s: Gemini Live server reported model interruption. New turn_id=%d",
