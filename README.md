@@ -75,9 +75,9 @@ notes search (SQLite).
   executor level.
 - API keys are sanitized out of log lines and WebSocket error messages via regex redaction
   before they can leak to any client.
-- 122 automated pytest tests cover the full backend: health endpoint, registry schema,
+- 127 automated pytest tests cover the full backend: health endpoint, registry schema,
   weather validation (mocked HTTP), reminder creation, notes search, DB isolation,
-  invalid-argument rejection, and simulated SQLite errors.
+  invalid-argument rejection, simulated SQLite errors, lazy OpenAI initialization, and CORS preflights.
 
 ### 5. Documentation
 
@@ -120,7 +120,7 @@ notes search (SQLite).
 | Concurrent multi-tool execution            | Live                |
 | Text fallback input                        | Live                |
 | API key redaction in error messages        | Live                |
-| 122 automated backend tests                | Live                |
+| 127 automated backend tests                | Live                |
 | Wake-word / always-on detection            | Not implemented     |
 
 ---
@@ -132,7 +132,7 @@ Microphone
  |
 Web Audio API (getUserMedia, ScriptProcessorNode)
  |  16 kHz PCM, mono, Int16 LE
-WebSocket  (ws://localhost:8000/ws/voice)
+WebSocket  (wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice or ws://localhost:8000/ws/voice)
  |
 FastAPI  (handle_voice_websocket)
  |
@@ -173,7 +173,7 @@ Conversation panel (real-time bubbles)
 ```
 real-time-voice-assistant/
 +-- app/
-|   +-- main.py                    # FastAPI app, routes, WebSocket endpoint
+|   +-- main.py                    # FastAPI app, routes, CORS middleware, WebSocket endpoint
 |   +-- database/
 |   |   +-- database.py            # SQLite init, CRUD, seed data
 |   |   +-- models.py              # NoteRecord, ReminderRecord dataclasses
@@ -182,26 +182,30 @@ real-time-voice-assistant/
 |   |   +-- session_manager.py     # VoiceSession, SessionManager, WebSocket handler
 |   |   +-- tool_executor.py       # ToolExecutor - dispatch, dedup, asyncio.gather
 |   |   +-- voice_pipeline.py      # Legacy OpenAI pipeline (unused in Live mode)
+|   |   +-- openai_client.py       # Lazy proxy for legacy endpoints
 |   +-- tools/
 |   |   +-- registry.py            # ToolRegistry, ToolDefinition, Gemini schemas
 |   |   +-- weather.py             # get_weather() - Open-Meteo via httpx
 |   |   +-- reminders.py           # create_reminder(), list_reminders(), clear_reminders()
 |   |   +-- notes.py               # search_notes(), add_note(), clear_notes()
-|   +-- static/
+|   +-- static/                    # Backend static assets mounted on Render
 |       +-- index.html             # Single-page UI
-|       +-- style.css              # All styling - dark theme, orb, waveform
-|       +-- app.js                 # State machine, WebSocket client, UI updates
+|       +-- style.css              # Dark theme, orb, waveform
+|       +-- app.js                 # Centralized CONFIG, state machine, WebSocket client
 |       +-- audio-streamer.js      # Mic capture, 16 kHz resampling, PCM conversion
 |       +-- audio-player.js        # Progressive 24 kHz PCM playback, barge-in
 |       +-- pcm-player.js          # Low-level PCM scheduling helper
++-- public/                        # Static assets directory for Vercel CDN deployment
 +-- tests/
-|   +-- test_backend.py            # 69 unit tests (mocked, isolated DB)
-|   +-- test_tools.py              # 28 tests incl. integration (@pytest.mark.integration)
+|   +-- test_backend.py            # 74 unit tests (mocked, isolated DB, CORS preflight)
+|   +-- test_tools.py              # 20 tests incl. integration (@pytest.mark.integration)
 |   +-- test_reliability.py        # 9 reliability / concurrency tests
-|   +-- test_session_manager.py    # 16 WebSocket session lifecycle tests
+|   +-- test_session_manager.py    # 17 WebSocket session lifecycle tests
 |   +-- test_gemini_client.py      # 7 Gemini client config tests
 +-- conftest.py                    # pytest marker registration (integration)
 +-- requirements.txt               # Python dependencies
++-- render.yaml                    # Render service configuration (FastAPI + WebSockets)
++-- vercel.json                    # Vercel deployment configuration (Static frontend)
 +-- .env.example                   # Environment variable template
 +-- assistant.db                   # SQLite database (auto-created on first run)
 ```
@@ -258,36 +262,42 @@ cp .env.example .env        # macOS / Linux
 # Then edit .env and fill in GEMINI_API_KEY (required)
 ```
 
-> `httpx` is installed as a transitive dependency of `google-genai` and does not need to be
-> listed separately in `requirements.txt`.
-
 ---
 
 ## Environment Variables
 
 Copy `.env.example` to `.env` and set the following:
 
+### Backend Variables (Render / Local Server)
 ```env
 # Required - get a free key at https://aistudio.google.com
 GEMINI_API_KEY=your_gemini_api_key_here
 
-# Optional - defaults shown
+# Optional Gemini Live settings - defaults shown
 GEMINI_LIVE_MODEL=gemini-2.5-flash-native-audio-latest
 GEMINI_VOICE_NAME=Puck          # Puck | Charon | Kore | Fenrir | Aoede
 
 # Weather API - Open-Meteo is free and does not require an API key
-# Set WEATHER_API_PROVIDER=openweathermap to use OpenWeatherMap instead
 WEATHER_API_KEY=open-meteo
 WEATHER_API_PROVIDER=open-meteo
+
+# Server Port & CORS
+PORT=10000
+FRONTEND_URL=https://real-time-voice-assistant-lovat.vercel.app
 ```
 
-The following legacy OpenAI variables in `.env.example` are used only by the
-`/api/text` and `/api/voice` HTTP endpoints (not the live WebSocket session).
-They are not required to run the real-time voice assistant:
+The legacy OpenAI variables in `.env.example` are only used if calling the deprecated `/api/text` or `/api/voice` HTTP endpoints:
 
 ```env
-OPENAI_API_KEY=         # only needed for /api/text and /api/voice endpoints
-OPENAI_LLM_MODEL=       # only needed for /api/text and /api/voice endpoints
+OPENAI_API_KEY=         # only needed for legacy /api/text and /api/voice endpoints
+OPENAI_LLM_MODEL=       # only needed for legacy /api/text and /api/voice endpoints
+```
+
+### Frontend Variables (Vercel / Public)
+```env
+# Optional overrides (defaults to Render production URLs automatically)
+# VOICE_ASSISTANT_API_URL=https://real-time-voice-assistant-9bh1.onrender.com
+# VOICE_ASSISTANT_WS_URL=wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice
 ```
 
 ---
@@ -479,15 +489,15 @@ pytest -m integration
 
 | Test file                 | Tests | What is covered                                                   |
 |---------------------------|-------|-------------------------------------------------------------------|
-| `test_backend.py`         | 69    | Health endpoint, registry, weather (mocked), reminders, notes, DB isolation |
-| `test_tools.py`           | 28    | Live weather API, SQLite persistence, tool executor, session dispatch |
-| `test_session_manager.py` | 16    | WebSocket lifecycle, ping/pong, audio, text, interruption, errors |
+| `test_backend.py`         | 74    | Health endpoint, registry, weather (mocked), reminders, notes, DB isolation, lazy OpenAI, CORS |
+| `test_tools.py`           | 20    | Tool schemas, parameter validation, batch execution, session dispatch |
+| `test_session_manager.py` | 17    | WebSocket lifecycle, ping/pong, audio, text, interruption, error recovery |
 | `test_reliability.py`     | 9     | API key redaction, dedup, malformed JSON, session teardown        |
 | `test_gemini_client.py`   | 7     | Config validation, key check, connection error handling           |
 | **Total**                 | **127** |                                                                 |
 
-All 127 tests pass. Unit tests require no API keys or network access. Integration tests
-require a valid `WEATHER_API_KEY` and network connectivity to Open-Meteo.
+All 127 tests pass cleanly. Unit tests require no API keys or network access. Integration tests
+can be run explicitly with `pytest -m integration`.
 
 ---
 
