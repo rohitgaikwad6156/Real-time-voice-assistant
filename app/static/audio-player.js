@@ -28,7 +28,7 @@ class AudioPlayer {
     this.nextPlayTime = 0;
     this.activeSources = new Set();
     this.isPlaying = false;
-    this.currentTurnId = 1;
+    this.cancelledTurnIds = new Set();
     this.onPlaybackStarted = options.onPlaybackStarted || null;
     this.onPlaybackEnded = options.onPlaybackEnded || null;
     this._idleCheckTimer = null;
@@ -62,13 +62,10 @@ class AudioPlayer {
   playChunk(chunk, turnId = null) {
     if (!chunk) return;
 
-    // Check against stale turns (barge-in guard)
+    // Check against cancelled turns (barge-in guard)
     if (turnId !== null && turnId !== undefined) {
-      if (turnId < this.currentTurnId) {
+      if (this.cancelledTurnIds.has(turnId)) {
         return; // Drop stale audio chunk from interrupted turn
-      }
-      if (turnId > this.currentTurnId) {
-        this.currentTurnId = turnId;
       }
     }
 
@@ -173,15 +170,13 @@ class AudioPlayer {
   /**
    * Immediately stop and clear all pending and active audio chunks.
    * 
-   * @param {number} [newTurnId] Optional next generation sequence ID.
+   * @param {number} [turnId] Optional turn ID to mark as cancelled.
    */
-  stop(newTurnId = null) {
+  stop(turnId = null) {
     clearTimeout(this._idleCheckTimer);
 
-    if (newTurnId !== null && newTurnId !== undefined) {
-      this.currentTurnId = Math.max(this.currentTurnId, newTurnId);
-    } else {
-      this.currentTurnId++;
+    if (turnId !== null && turnId !== undefined) {
+      this.cancelledTurnIds.add(turnId);
     }
 
     // Stop and disconnect every active source node immediately
