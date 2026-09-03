@@ -1,0 +1,13 @@
+# Ignore backend Python code and unnecessary files from Vercel frontend build
+.env*
+requirements.txt
+render.yaml
+tests/
+app/database/
+app/services/
+app/tools/
+app/main.py
+data/
+conftest.py
+*.db
+*.wav

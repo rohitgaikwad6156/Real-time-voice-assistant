@@ -1,18 +1,10 @@
 {
-  "version": 2,
+  "outputDirectory": "app/static",
   "cleanUrls": true,
-  "routes": [
+  "rewrites": [
     {
-      "src": "/",
-      "dest": "/app/static/index.html"
-    },
-    {
-      "src": "/static/(.*)",
-      "dest": "/app/static/$1"
-    },
-    {
-      "src": "/(.*)",
-      "dest": "/app/static/$1"
+      "source": "/static/:path*",
+      "destination": "/:path*"
     }
   ]
 }
