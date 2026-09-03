@@ -219,8 +219,24 @@ function hideToolActivity() {
 // Toast Notifications
 // ==============================================================================
 
+let lastToastMessage = "";
+let lastToastTime = 0;
+
 function showToast(message, isError = true) {
   if (!toastContainer) return;
+
+  const now = Date.now();
+  // Debounce identical toast messages within 2.5 seconds
+  if (message === lastToastMessage && now - lastToastTime < 2500) {
+    return;
+  }
+  lastToastMessage = message;
+  lastToastTime = now;
+
+  // Limit maximum simultaneous toasts on screen to 3
+  while (toastContainer.children.length >= 3) {
+    toastContainer.removeChild(toastContainer.firstElementChild);
+  }
 
   const toast = document.createElement("div");
   toast.className = "toast";

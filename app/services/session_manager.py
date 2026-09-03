@@ -69,6 +69,7 @@ class VoiceSession:
         self.total_bytes_received: int = 0
         self.turn_id: int = 1
         self._executed_call_ids: set[str] = set()
+        self._stream_error_sent: bool = False
 
     async def handle_interrupt(self) -> None:
         """Handle user barge-in interruption."""
@@ -101,6 +102,25 @@ class VoiceSession:
         self._receive_task = asyncio.create_task(self._listen_to_gemini())
         return self.gemini_session
 
+    async def reset_gemini_session(self, close_task: bool = True) -> None:
+        """Reset and clean up an existing Gemini Live session so it can be reconnected."""
+        if close_task and self._receive_task is not None and self._receive_task != asyncio.current_task():
+            self._receive_task.cancel()
+            try:
+                await self._receive_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        self._receive_task = None
+
+        if self._gemini_cm is not None:
+            try:
+                await self._gemini_cm.__aexit__(None, None, None)
+            except Exception as exc:
+                logger.debug("Error closing Gemini session for %s: %s", self.session_id, exc)
+            self._gemini_cm = None
+
+        self.gemini_session = None
+
     async def _listen_to_gemini(self) -> None:
         """Continuously receive events from Gemini Live API and forward to the client."""
         logger.info("Session %s started Gemini receive loop.", self.session_id)
@@ -118,9 +138,13 @@ class VoiceSession:
         except (GeminiError, Exception) as exc:
             clean_err = sanitize_error_message(str(exc))
             logger.error("Error in Gemini receive loop for %s: %s", self.session_id, clean_err)
-            await self.send_status(status="error", message=f"Gemini streaming error: {clean_err}")
+            if not self._stream_error_sent:
+                self._stream_error_sent = True
+                await self.send_status(status="error", message=f"Gemini connection error: {clean_err}")
         finally:
             logger.info("Session %s exited Gemini receive loop.", self.session_id)
+            if self.is_active:
+                await self.reset_gemini_session(close_task=False)
 
     async def _process_gemini_message(self, message: types.LiveServerMessage) -> None:
         """Process an incoming server message from Gemini Live API."""
@@ -269,8 +293,15 @@ class VoiceSession:
 
     async def send_audio(self, pcm_bytes: bytes) -> None:
         """Forward a raw PCM 16-bit audio chunk to Gemini Live API."""
-        session = await self.ensure_gemini_connected()
-        await session.send_audio_chunk(pcm_bytes, mime_type="audio/pcm;rate=16000")
+        try:
+            session = await self.ensure_gemini_connected()
+            await session.send_audio_chunk(pcm_bytes, mime_type="audio/pcm;rate=16000")
+        except (GeminiConnectionError, Exception) as exc:
+            logger.warning("Session %s audio send failed (%s). Reconnecting Gemini session...", self.session_id, exc)
+            await self.reset_gemini_session(close_task=True)
+            session = await self.ensure_gemini_connected()
+            await session.send_audio_chunk(pcm_bytes, mime_type="audio/pcm;rate=16000")
+
         self.audio_chunks_received += 1
         self.total_bytes_received += len(pcm_bytes)
 
@@ -309,24 +340,7 @@ class VoiceSession:
     async def close(self) -> None:
         """Clean up background tasks, close Gemini Live session, and mark inactive."""
         self.is_active = False
-
-        # 1. Cancel background receiver task
-        if self._receive_task is not None:
-            self._receive_task.cancel()
-            try:
-                await self._receive_task
-            except (asyncio.CancelledError, Exception):
-                pass
-            self._receive_task = None
-
-        # 2. Close Gemini Live session context manager
-        if self._gemini_cm is not None:
-            try:
-                await self._gemini_cm.__aexit__(None, None, None)
-            except Exception as exc:
-                logger.debug("Error closing Gemini session for %s: %s", self.session_id, exc)
-            self._gemini_cm = None
-            self.gemini_session = None
+        await self.reset_gemini_session(close_task=True)
 
 
 class SessionManager:
@@ -419,17 +433,27 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
             if bytes_payload is not None:
                 try:
                     await session.send_audio(bytes_payload)
+                    session._stream_error_sent = False
                     if session.audio_chunks_received == 1:
                         await session.send_status(status="streaming")
                 except GeminiConfigError as cfg_err:
-                    logger.error("Session %s Gemini config error: %s", session.session_id, cfg_err)
-                    await session.send_status(status="error", message=str(cfg_err))
+                    clean_err = sanitize_error_message(str(cfg_err))
+                    logger.error("Session %s Gemini config error: %s", session.session_id, clean_err)
+                    if not session._stream_error_sent:
+                        session._stream_error_sent = True
+                        await session.send_status(status="error", message=clean_err)
                 except GeminiConnectionError as conn_err:
-                    logger.error("Session %s Gemini connection error: %s", session.session_id, conn_err)
-                    await session.send_status(status="error", message=str(conn_err))
+                    clean_err = sanitize_error_message(str(conn_err))
+                    logger.error("Session %s Gemini connection error: %s", session.session_id, clean_err)
+                    if not session._stream_error_sent:
+                        session._stream_error_sent = True
+                        await session.send_status(status="error", message=clean_err)
                 except Exception as exc:
-                    logger.exception("Session %s audio streaming error: %s", session.session_id, exc)
-                    await session.send_status(status="error", message=f"Audio streaming error: {exc}")
+                    clean_err = sanitize_error_message(str(exc))
+                    logger.exception("Session %s audio streaming error: %s", session.session_id, clean_err)
+                    if not session._stream_error_sent:
+                        session._stream_error_sent = True
+                        await session.send_status(status="error", message=f"Audio streaming error: {clean_err}")
                 continue
 
             # --------------------------------------------------------------
@@ -471,6 +495,7 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
 
                 elif action == "start_audio":
                     logger.info("Session %s starting audio stream.", session.session_id)
+                    session._stream_error_sent = False
                     await session.send_status(status="streaming")
 
                 elif action == "stop_audio":
@@ -491,11 +516,27 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
                     try:
                         pcm_bytes = base64.b64decode(b64_data)
                         await session.send_audio(pcm_bytes)
+                        session._stream_error_sent = False
                         if session.audio_chunks_received == 1:
                             await session.send_status(status="streaming")
+                    except GeminiConfigError as cfg_err:
+                        clean_err = sanitize_error_message(str(cfg_err))
+                        logger.error("Session %s Gemini config error: %s", session.session_id, clean_err)
+                        if not session._stream_error_sent:
+                            session._stream_error_sent = True
+                            await session.send_status(status="error", message=clean_err)
+                    except GeminiConnectionError as conn_err:
+                        clean_err = sanitize_error_message(str(conn_err))
+                        logger.error("Session %s Gemini connection error: %s", session.session_id, clean_err)
+                        if not session._stream_error_sent:
+                            session._stream_error_sent = True
+                            await session.send_status(status="error", message=clean_err)
                     except Exception as exc:
-                        logger.error("Session %s base64 audio error: %s", session.session_id, exc)
-                        await session.send_status(status="error", message=f"Invalid audio chunk: {exc}")
+                        clean_err = sanitize_error_message(str(exc))
+                        logger.error("Session %s base64 audio error: %s", session.session_id, clean_err)
+                        if not session._stream_error_sent:
+                            session._stream_error_sent = True
+                            await session.send_status(status="error", message=f"Invalid audio chunk: {clean_err}")
 
                 elif action == "text":
                     user_prompt = message.get("text", "").strip()
@@ -510,7 +551,13 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
                                 "text": user_prompt,
                                 "is_final": True,
                             })
-                            await gemini_session.send_text(user_prompt)
+                            try:
+                                await gemini_session.send_text(user_prompt)
+                            except (GeminiConnectionError, Exception) as send_err:
+                                logger.warning("Session %s send_text failed (%s). Reconnecting...", session.session_id, send_err)
+                                await session.reset_gemini_session()
+                                gemini_session = await session.ensure_gemini_connected()
+                                await gemini_session.send_text(user_prompt)
                         except GeminiConfigError as cfg_err:
                             clean_err = sanitize_error_message(str(cfg_err))
                             logger.error("Session %s Gemini config error: %s", session.session_id, clean_err)
