@@ -809,3 +809,41 @@ class TestOpenAILazyInitialization:
         assert "OPENAI_API_KEY is missing" in response.json()["detail"]
 
 
+class TestCORSConfiguration:
+    """Verify CORS headers for Vercel, Render, and local development origins."""
+
+    def test_cors_preflight_for_vercel_origin(self):
+        """OPTIONS preflight from a Vercel domain receives allowed origin and methods."""
+        from app.main import app
+        client = TestClient(app)
+        origin = "https://voice-assistant-demo.vercel.app"
+        response = client.options(
+            "/health",
+            headers={
+                "Origin": origin,
+                "Access-Control-Request-Method": "GET",
+            },
+        )
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == origin
+
+    def test_cors_get_for_vercel_origin(self):
+        """GET request with Vercel Origin header receives Access-Control-Allow-Origin."""
+        from app.main import app
+        client = TestClient(app)
+        origin = "https://real-time-voice-frontend.vercel.app"
+        response = client.get("/health", headers={"Origin": origin})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == origin
+
+    def test_cors_for_localhost_origin(self):
+        """Localhost origin is permitted for local frontend development."""
+        from app.main import app
+        client = TestClient(app)
+        origin = "http://localhost:3000"
+        response = client.get("/health", headers={"Origin": origin})
+        assert response.status_code == 200
+        assert response.headers.get("access-control-allow-origin") == origin
+
+
+

@@ -477,34 +477,125 @@ pytest -m integration
 | `test_session_manager.py` | 16    | WebSocket lifecycle, ping/pong, audio, text, interruption, errors |
 | `test_reliability.py`     | 9     | API key redaction, dedup, malformed JSON, session teardown        |
 | `test_gemini_client.py`   | 7     | Config validation, key check, connection error handling           |
-| **Total**                 | **122** |                                                                 |
+| **Total**                 | **127** |                                                                 |
 
-All 122 tests pass. Unit tests require no API keys or network access. Integration tests
+All 127 tests pass. Unit tests require no API keys or network access. Integration tests
 require a valid `WEATHER_API_KEY` and network connectivity to Open-Meteo.
+
+---
+
+## Deployment Architecture (Vercel + Render)
+
+The application utilizes a split production deployment architecture:
+
+```text
+                    USER BROWSER
+                     |        |
+         Static HTTP |        | Persistent WebSocket (wss://)
+                     v        |
+              +-------------+ |
+              |   VERCEL    | |
+              |  FRONTEND   | | (Pure static assets: HTML, CSS, JS)
+              +-------------+ |
+                              v
+                       +-------------+
+                       |   RENDER    |
+                       |   BACKEND   | (FastAPI + WebSockets)
+                       |  PORT 10000 |
+                       +------+------+
+                              |
+       +----------------------+----------------------+
+       |                      |                      |
+       v                      v                      v
+Google Gemini Live       Callable Tools        SQLite Database
+ (Audio streaming)      (Weather/Remind/Notes)   (assistant.db)
+```
+
+### Why This Architecture?
+- **Vercel** is an edge CDN optimized for lightning-fast delivery of static frontend assets (`index.html`, `style.css`, `app.js`). Vercel Serverless Functions have 15-second to 60-second timeouts, missing audio dependencies, and do **not** support persistent bidirectional WebSockets. Attempting to deploy the Python backend to Vercel causes `500: FUNCTION_INVOCATION_FAILED`.
+- **Render** runs a dedicated persistent Python container that hosts FastAPI, maintains long-lived bidirectional WebSockets with clients, manages real-time PCM audio streaming with the Google Gemini Live API, and executes backend tools with SQLite.
+
+---
+
+### 1. Render Deployment (Backend Only)
+
+The backend is configured via [render.yaml](file:///d:/Real%20time%20voice%20assistant/render.yaml):
+- **Runtime:** `python`
+- **Build Command:** `pip install -r requirements.txt`
+- **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}`
+- **Health Check Path:** `/health` (returns `{"status": "ok"}`)
+- **Live URL:** `https://real-time-voice-assistant-9bh1.onrender.com`
+- **WebSocket Route:** `wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice`
+
+#### Render Environment Variables
+Configure these in the Render Dashboard (**Service** > **Environment**):
+- `GEMINI_API_KEY`: Your Google Gemini API key (private secret).
+- `GEMINI_LIVE_MODEL`: `gemini-2.5-flash-native-audio-latest`
+- `GEMINI_VOICE_NAME`: `Puck`
+- `WEATHER_API_PROVIDER`: `open-meteo`
+- `WEATHER_API_KEY`: `open-meteo`
+- `FRONTEND_URL`: Optional custom Vercel domain (e.g. `https://your-app.vercel.app`) to permit via CORS.
+
+---
+
+### 2. Vercel Deployment (Frontend Only)
+
+The frontend is configured via [vercel.json](file:///d:/Real%20time%20voice%20assistant/vercel.json):
+```json
+{
+  "version": 2,
+  "cleanUrls": true,
+  "routes": [
+    { "src": "/", "dest": "/app/static/index.html" },
+    { "src": "/static/(.*)", "dest": "/app/static/$1" },
+    { "src": "/(.*)", "dest": "/app/static/$1" }
+  ]
+}
+```
+
+#### Vercel Dashboard Project Settings:
+1. **Framework Preset:** `Other` (Static Site)
+2. **Root Directory:** `./` (or leave default root)
+3. **Build Command:** Leave empty / disabled (no npm/build step needed)
+4. **Output Directory:** Leave default or `app/static`
+5. **Install Command:** Leave empty / disabled
+6. **Environment Variables:** No private secrets required!
+
+---
+
+### 3. Frontend-to-Backend Communication
+- **Centralized Configuration:** [app/static/app.js](file:///d:/Real%20time%20voice%20assistant/app/static/app.js) contains a centralized `CONFIG` object.
+  - When accessed on `*.vercel.app`, the frontend automatically points API requests to `https://real-time-voice-assistant-9bh1.onrender.com` and WebSockets to `wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice`.
+  - When accessed on `localhost` / `127.0.0.1`, it automatically connects to the local development server.
+- **CORS Support:** FastAPI in [app/main.py](file:///d:/Real%20time%20voice%20assistant/app/main.py) includes `CORSMiddleware` permitting all `https://*.vercel.app` domains, Render, and local development origins for `GET`, `POST`, and `OPTIONS` preflight requests.
 
 ---
 
 ## Known Limitations
 
-1. **Reminders are not scheduled.** `create_reminder` stores the title and time string in
+1. **Ephemeral SQLite storage on Render free tier.** `assistant.db` is stored on the local container filesystem. On Render free instances, the filesystem is ephemeral and resets if the service is redeployed or restarts after idling. For permanent persistence across restarts, an external database (e.g. PostgreSQL) or persistent disk can be attached.
+
+2. **WebSockets unsupported on Vercel.** Vercel Edge/Serverless does not support persistent stateful WebSockets, which is why the backend must be hosted on Render.
+
+3. **Reminders are not scheduled.** `create_reminder` stores the title and time string in
    SQLite, but there is no background scheduler or push notification mechanism. The stored
    time is a human-readable string (e.g. "tomorrow at 7 PM"), not a parsed `datetime`.
 
-2. **Notes search is a simple SQL LIKE match.** It is case-insensitive keyword matching, not
+4. **Notes search is a simple SQL LIKE match.** It is case-insensitive keyword matching, not
    semantic or full-text search. Complex or misspelled queries may return no results.
 
-3. **No multi-user isolation.** The server supports multiple concurrent WebSocket sessions
+5. **No multi-user isolation.** The server supports multiple concurrent WebSocket sessions
    (each gets its own `VoiceSession` instance), but there is no user authentication,
    session persistence, or per-user database partitioning.
 
-4. **No wake-word detection.** The user must click "Start Speaking" to begin a session.
+6. **No wake-word detection.** The user must click "Start Speaking" to begin a session.
    There is no always-listening or hot-word activation.
 
-5. **OpenAI pipeline (`/api/text`, `/api/voice`) requires its own API key.** These legacy
+7. **OpenAI pipeline (`/api/text`, `/api/voice`) requires its own API key.** These legacy
    HTTP endpoints use the OpenAI SDK. They are unrelated to the Gemini Live session and do
    not need to be configured if only the voice assistant is used.
 
-6. **Browser audio constraints are advisory.** Echo cancellation and noise suppression are
+8. **Browser audio constraints are advisory.** Echo cancellation and noise suppression are
    requested but cannot be guaranteed — the browser and OS audio stack may override them.
 
 ---
@@ -533,16 +624,18 @@ Specifically:
 
 - **Architecture design and boilerplate** — FastAPI app scaffold, WebSocket handler
   structure, and database schema were drafted with AI assistance.
+- **Deployment Architecture Fix** — Resolved Vercel `500 FUNCTION_INVOCATION_FAILED` by decoupling
+  static frontend delivery from the persistent Python WebSocket backend on Render, implementing
+  CORS middleware and centralized frontend URL routing.
 - **`gemini_client.py` and `session_manager.py`** — the connection lifecycle, lazy
   initialisation pattern, and message routing logic were developed iteratively with AI.
 - **`AudioStreamer` and `AudioPlayer`** (JavaScript) — the PCM resampling algorithm,
-  gapless scheduling logic, and barge-in cut-off mechanism were written with AI assistance.
+  gapless scheduling logic, echo suppression, and barge-in cut-off mechanism were written with AI assistance.
 - **Test suite** (`test_backend.py`, `test_reliability.py`, `test_session_manager.py`) —
-  all test files were generated with AI assistance and then verified by actually running them.
-- **`weather.py` unit-validation fix** (Step 15 cleanup) — the empty-string silent-coercion
-  bug (`unit or "celsius"`) was identified and fixed with AI assistance.
-- **README** (this file, Step 16) — written with AI assistance based on reading the actual
-  source code rather than from memory.
+  all 127 unit tests were created with AI assistance and verified by executing pytest.
+- **`weather.py` unit-validation fix** — the empty-string silent-coercion bug (`unit or "celsius"`)
+  was identified and fixed with AI assistance.
+- **README** (this file) — written with AI assistance based on reading and verifying actual source code.
 
 Code was not blindly accepted: every generated piece was read, run, and verified against
 actual test output before being committed to the project.

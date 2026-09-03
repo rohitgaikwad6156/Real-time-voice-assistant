@@ -40,6 +40,45 @@ const statusItemListening = document.getElementById("statusItemListening");
 const statusItemThinking = document.getElementById("statusItemThinking");
 const statusItemSpeaking = document.getElementById("statusItemSpeaking");
 
+// Centralized Backend & WebSocket Configuration (Vercel + Render Split Architecture)
+const RENDER_BACKEND_ORIGIN = "https://real-time-voice-assistant-9bh1.onrender.com";
+const RENDER_WS_ORIGIN = "wss://real-time-voice-assistant-9bh1.onrender.com";
+
+function getAppConfig() {
+  if (window.APP_CONFIG && window.APP_CONFIG.WS_URL && window.APP_CONFIG.API_URL) {
+    return window.APP_CONFIG;
+  }
+
+  const hostname = window.location.hostname;
+  const isLocal = hostname === "localhost" || hostname === "127.0.0.1";
+  const isVercel = hostname.endsWith(".vercel.app");
+
+  let apiUrl;
+  let wsUrl;
+
+  if (isLocal) {
+    const port = window.location.port ? `:${window.location.port}` : "";
+    const protocol = window.location.protocol;
+    const wsProtocol = protocol === "https:" ? "wss:" : "ws:";
+    apiUrl = `${protocol}//${hostname}${port}`;
+    wsUrl = `${wsProtocol}//${hostname}${port}/ws/voice`;
+  } else if (isVercel) {
+    apiUrl = RENDER_BACKEND_ORIGIN;
+    wsUrl = `${RENDER_WS_ORIGIN}/ws/voice`;
+  } else {
+    const wsProtocol = window.location.protocol === "https:" ? "wss:" : "ws:";
+    apiUrl = `${window.location.protocol}//${window.location.host}`;
+    wsUrl = `${wsProtocol}//${window.location.host}/ws/voice`;
+  }
+
+  return {
+    API_URL: window.VOICE_ASSISTANT_API_URL || apiUrl,
+    WS_URL: window.VOICE_ASSISTANT_WS_URL || wsUrl,
+  };
+}
+
+const CONFIG = getAppConfig();
+
 // State & Lifecycle Variables
 let websocket = null;
 let reconnectTimer = null;
@@ -398,9 +437,7 @@ function initWebSocket() {
     return;
   }
 
-  const protocol = window.location.protocol === "https:" ? "wss:" : "ws:";
-  const wsUrl = `${protocol}//${window.location.host}/ws/voice`;
-
+  const wsUrl = CONFIG.WS_URL;
   console.log("[WebSocket] Connecting to:", wsUrl);
   setConnectionState("connecting", "Connecting...");
   setAssistantState("connecting");

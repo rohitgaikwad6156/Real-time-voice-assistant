@@ -1,6 +1,8 @@
 import logging
+import os
 from pathlib import Path
 from fastapi import FastAPI, File, HTTPException, UploadFile, WebSocket
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
@@ -12,6 +14,32 @@ from app.services.voice_pipeline import answer_from_text, transcribe_audio, gene
 
 BASE_DIR = Path(__file__).resolve().parent
 app = FastAPI(title="AI Voice Assistant", version="1.0.0")
+
+# Cross-Origin Resource Sharing (CORS) Configuration
+# Permits local development, live Render backend, and any Vercel deployment (*.vercel.app)
+ALLOWED_ORIGINS = [
+    "http://localhost:8000",
+    "http://127.0.0.1:8000",
+    "http://localhost:3000",
+    "http://127.0.0.1:3000",
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+    "https://real-time-voice-assistant-9bh1.onrender.com",
+]
+
+custom_frontend = os.getenv("FRONTEND_URL")
+if custom_frontend and custom_frontend not in ALLOWED_ORIGINS:
+    ALLOWED_ORIGINS.append(custom_frontend.rstrip("/"))
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"^https://.*\.vercel\.app$",
+    allow_credentials=True,
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["*"],
+)
+
 app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 class TextRequest(BaseModel):
