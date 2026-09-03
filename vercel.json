@@ -4,7 +4,7 @@
   "rewrites": [
     {
       "source": "/static/:path*",
-      "destination": "/app/static/:path*"
+      "destination": "/:path*"
     }
   ]
 }
