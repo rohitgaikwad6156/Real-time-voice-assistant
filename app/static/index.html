@@ -1,0 +1,146 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+  <title>Real-Time AI Voice Assistant</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="app-layout">
+    <!-- Top Navigation & Status -->
+    <header class="top-nav">
+      <div class="brand">
+        <span class="brand-badge">LIVE</span>
+        <div class="brand-titles">
+          <h1>REAL-TIME</h1>
+          <h2>VOICE ASSISTANT</h2>
+        </div>
+      </div>
+
+      <div class="top-meta">
+        <div id="connectionStatus" class="connection-pill connected" aria-live="polite">
+          <span class="status-dot"></span>
+          <span id="connectionText">Connected</span>
+        </div>
+        <div class="model-pill">Gemini 2.5 Native Audio</div>
+      </div>
+    </header>
+
+    <!-- Main Experience Area -->
+    <main class="main-content">
+      <!-- Voice Orb Hero Stage -->
+      <section class="orb-stage" aria-label="Voice Assistant Interaction Area">
+        <div class="orb-wrapper">
+          <div id="voiceOrb" class="voice-orb state-idle" role="img" aria-label="Animated Voice Assistant Orb">
+            <div class="orb-ring ring-3"></div>
+            <div class="orb-ring ring-2"></div>
+            <div class="orb-ring ring-1"></div>
+            <div class="orb-core">
+              <div class="orb-glow"></div>
+              <div class="orb-specular"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Real-Time Audio Waveform Canvas -->
+        <div class="waveform-container">
+          <canvas id="waveformCanvas" width="480" height="64" aria-hidden="true"></canvas>
+        </div>
+
+        <!-- Central Greeting / Dynamic Prompt -->
+        <h3 id="heroPrompt" class="hero-prompt">"How can I help you today?"</h3>
+
+        <!-- Status Lifecycle Tracker -->
+        <div class="status-tracker" role="status">
+          <span id="statusItemConnected" class="status-item active">● Connected</span>
+          <span id="statusItemListening" class="status-item">● Listening</span>
+          <span id="statusItemThinking" class="status-item">● Thinking</span>
+          <span id="statusItemSpeaking" class="status-item">● Speaking</span>
+        </div>
+
+        <!-- Live Tool Activity Banner -->
+        <div id="toolActivityBanner" class="tool-activity-banner" hidden aria-live="polite">
+          <div class="tool-activity-content">
+            <span class="tool-icon" id="toolIcon">🔧</span>
+            <span id="toolActivityText" class="tool-text">Checking weather...</span>
+          </div>
+        </div>
+      </section>
+
+      <!-- Live Conversation Panel -->
+      <section class="conversation-panel card" aria-label="Conversation History">
+        <div class="panel-header">
+          <div class="panel-title-group">
+            <h3>Live Conversation</h3>
+            <span id="turnCounter" class="turn-counter">0 turns</span>
+          </div>
+          <button id="clearConversationBtn" class="btn-text-action" aria-label="Clear conversation history">Clear</button>
+        </div>
+
+        <div id="conversationList" class="conversation-container" role="log" aria-live="polite">
+          <div class="empty-hint" id="emptyHint">
+            <div class="empty-icon">🎙️</div>
+            <p class="empty-title">Ready to assist you</p>
+            <p class="empty-desc">Click <strong>Start Speaking</strong> below or ask by text to begin your real-time conversation.</p>
+          </div>
+        </div>
+      </section>
+    </main>
+
+    <!-- Bottom Sticky Control Bar -->
+    <footer class="bottom-control-bar">
+      <div class="controls-wrapper">
+        <!-- Voice Input Primary Action -->
+        <button id="recordButton" class="btn-voice" aria-label="Start voice streaming" type="button">
+          <span class="btn-voice-ripple" aria-hidden="true"></span>
+          <span class="btn-voice-icon" aria-hidden="true">🎤</span>
+          <span id="recordButtonText" class="btn-voice-text">Start Speaking</span>
+        </button>
+
+        <!-- Inline Text Input Group -->
+        <form id="textForm" class="text-input-group" onsubmit="return false;">
+          <input 
+            type="text" 
+            id="textInput" 
+            placeholder="Type your question or query (e.g., Pune weather, remind me)..." 
+            aria-label="Ask assistant by typing" 
+            autocomplete="off" 
+          />
+          <button id="textButton" class="btn-send" type="button" aria-label="Send message">
+            <span>Send</span>
+          </button>
+        </form>
+      </div>
+
+      <!-- State & Hidden Compatibility Elements -->
+      <div class="footer-meta">
+        <div id="stateBadge" class="state-badge state-idle">IDLE</div>
+        <span id="recordStatus" class="status-summary">Ready</span>
+      </div>
+    </footer>
+
+    <!-- Toast Notifications Container -->
+    <div id="toastContainer" class="toast-container" aria-live="assertive"></div>
+
+    <!-- Hidden compatibility elements for existing hooks -->
+    <p id="error" hidden></p>
+    <div id="results" hidden>
+      <p id="transcript"></p>
+      <p id="answer"></p>
+    </div>
+    <button id="voiceButton" style="display:none"></button>
+    <audio id="recordedAudio" style="display:none"></audio>
+    <audio id="responseAudio" style="display:none"></audio>
+    <a id="downloadLink" style="display:none"></a>
+  </div>
+
+  <!-- Client Audio & Pipeline Scripts -->
+  <script src="/static/audio-streamer.js"></script>
+  <script src="/static/audio-player.js"></script>
+  <script src="/static/app.js"></script>
+</body>
+</html>
