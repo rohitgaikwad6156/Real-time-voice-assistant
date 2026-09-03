@@ -677,7 +677,11 @@ function stopStreaming() {
 
   isStreaming = false;
   currentVoiceEnergy = 0.0;
-  setAssistantState("idle");
+  if (chunksSent > 0) {
+    setAssistantState("thinking", "Thinking...");
+  } else {
+    setAssistantState("idle");
+  }
 }
 
 if (recordButton) {

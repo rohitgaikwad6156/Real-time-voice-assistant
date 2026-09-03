@@ -130,11 +130,18 @@ class GeminiLiveConfig:
             from app.tools.registry import get_default_registry
             live_tools = get_default_registry().get_gemini_tools()
 
+        thinking_config = None
+        try:
+            thinking_config = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            pass
+
         return types.LiveConnectConfig(
             response_modalities=modalities,
             speech_config=speech_config,
             system_instruction=system_instruction,
             tools=live_tools,
+            thinking_config=thinking_config,
             input_audio_transcription=types.AudioTranscriptionConfig(),
             output_audio_transcription=types.AudioTranscriptionConfig(),
         )
@@ -181,13 +188,26 @@ class GeminiLiveSession:
             mime_type: MIME type of the audio stream (default: audio/pcm;rate=16000).
         """
         try:
+            # Note: Google GenAI Live API requires media= for streaming audio VAD (mediaChunks)
             await self._session.send_realtime_input(
-                audio=types.Blob(data=pcm_bytes, mime_type=mime_type)
+                media=types.Blob(data=pcm_bytes, mime_type=mime_type)
             )
         except Exception as exc:
             raise GeminiConnectionError(
                 f"Failed to stream audio chunk to Gemini Live: {exc}"
             ) from exc
+
+    async def end_audio_stream(self) -> None:
+        """Signal to Gemini Live that the user has stopped sending audio chunks.
+
+        Allows Gemini's turn detection to immediately close the speech segment
+        and generate the response without waiting for client-side timeout.
+        """
+        try:
+            await self._session.send_realtime_input(audio_stream_end=True)
+        except Exception as exc:
+            # Non-fatal warning if already ended or interrupted
+            pass
 
     async def send_text(self, text: str, end_of_turn: bool = True) -> None:
         """Send a text turn to Gemini Live.

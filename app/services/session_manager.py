@@ -306,6 +306,14 @@ class VoiceSession:
         self.audio_chunks_received += 1
         self.total_bytes_received += len(pcm_bytes)
 
+    async def end_audio_stream(self) -> None:
+        """Signal to Gemini Live that the current speech input turn has ended."""
+        if self.gemini_session is not None:
+            try:
+                await self.gemini_session.end_audio_stream()
+            except Exception as exc:
+                logger.warning("Session %s error ending audio stream: %s", self.session_id, exc)
+
     async def send_json(self, payload: Dict[str, Any]) -> bool:
         """Send a JSON payload to the connected WebSocket client.
 
@@ -506,6 +514,7 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
                         session.audio_chunks_received,
                         session.total_bytes_received,
                     )
+                    await session.end_audio_stream()
                     await session.send_status(
                         status="stopped",
                         chunks=session.audio_chunks_received,
