@@ -13,7 +13,7 @@ from app.database.models import NoteRecord, ReminderRecord
 
 logger = logging.getLogger(__name__)
 
-DEFAULT_DB_PATH = "assistant.db"
+DEFAULT_DB_PATH = "/tmp/assistant.db" if os.getenv("VERCEL") else "assistant.db"
 
 # Seed data for notes (included for development and test scenarios)
 INITIAL_SEED_NOTES = [
