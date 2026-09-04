@@ -93,9 +93,12 @@ let currentVoiceEnergy = 0.0;
 let toolActivityTimer = null;
 const BARGE_IN_COOLDOWN_MS = 200;
 
-// Conversation Turn Elements
+// Conversation Turn Elements & Transcript State
 let currentUserBubble = null;
 let currentAssistantBubble = null;
+let currentUserTranscript = "";
+let finalUserTranscript = "";
+let isUserTurnActive = false;
 
 // ==============================================================================
 // State Machine Management (idle, connecting, listening, thinking, speaking, interrupted, error)
@@ -357,6 +360,71 @@ function scrollConversationToBottom() {
   }
 }
 
+function updateUserTranscriptUI() {
+  const displayText = currentUserTranscript.trimStart();
+  if (textInput) {
+    textInput.value = displayText;
+  }
+  const compatTranscript = document.getElementById("transcript");
+  if (compatTranscript) {
+    compatTranscript.textContent = displayText;
+  }
+  const bubble = getOrCreateUserBubble();
+  bubble.textContent = displayText || "...";
+  bubble.classList.add("turn-interim");
+  scrollConversationToBottom();
+}
+
+function appendOrUpdateUserTranscript(incomingText) {
+  if (!incomingText) return;
+
+  // Initialize a new turn if one wasn't active
+  if (!isUserTurnActive) {
+    isUserTurnActive = true;
+    currentUserTranscript = "";
+    finalUserTranscript = "";
+    currentUserBubble = null;
+    currentAssistantBubble = null;
+  }
+
+  const cur = currentUserTranscript;
+  const inc = incomingText;
+  const curTrim = cur.trim();
+  const incTrim = inc.trim();
+
+  // Check if incomingText is a cumulative replacement (starts with or extends current transcript)
+  if (curTrim.length > 0 && (inc.startsWith(cur) || (incTrim.length > curTrim.length && incTrim.startsWith(curTrim)))) {
+    currentUserTranscript = inc;
+  } else {
+    // Delta / incremental appending (Gemini Live speech recognition chunks)
+    currentUserTranscript += inc;
+  }
+
+  updateUserTranscriptUI();
+}
+
+function finalizeUserTurn() {
+  if (!isUserTurnActive && !currentUserBubble) return;
+
+  if (currentUserTranscript.trim()) {
+    finalUserTranscript = currentUserTranscript.trim();
+    if (currentUserBubble) {
+      currentUserBubble.textContent = finalUserTranscript;
+      currentUserBubble.classList.remove("turn-interim");
+    }
+    if (textInput) {
+      textInput.value = finalUserTranscript;
+    }
+    const compatTranscript = document.getElementById("transcript");
+    if (compatTranscript) {
+      compatTranscript.textContent = finalUserTranscript;
+    }
+  }
+
+  currentUserBubble = null;
+  isUserTurnActive = false;
+}
+
 if (clearConversationBtn) {
   clearConversationBtn.onclick = () => {
     if (conversationList) {
@@ -370,6 +438,16 @@ if (clearConversationBtn) {
     }
     currentUserBubble = null;
     currentAssistantBubble = null;
+    currentUserTranscript = "";
+    finalUserTranscript = "";
+    isUserTurnActive = false;
+    if (textInput) {
+      textInput.value = "";
+    }
+    const compatTranscript = document.getElementById("transcript");
+    if (compatTranscript) {
+      compatTranscript.textContent = "";
+    }
     totalTurns = 0;
     updateTurnCounter();
   };
@@ -524,18 +602,16 @@ function handleServerMessage(message) {
 
     if (role === "user") {
       setAssistantState("listening");
-      const bubble = getOrCreateUserBubble();
-      bubble.textContent = text;
+      appendOrUpdateUserTranscript(text);
 
       if (message.is_final) {
-        bubble.classList.remove("turn-interim");
-        currentUserBubble = null; // Finalize user turn
-        currentAssistantBubble = null; // Prepare for assistant reply
+        if (currentUserBubble) {
+          currentUserBubble.classList.remove("turn-interim");
+        }
         setAssistantState("thinking");
-      } else {
-        bubble.classList.add("turn-interim");
       }
     } else {
+      finalizeUserTurn();
       const bubble = getOrCreateAssistantBubble();
       bubble.textContent += text;
     }
@@ -544,6 +620,7 @@ function handleServerMessage(message) {
 
   // 4. Incremental Model Text Deltas
   else if (message.type === "text") {
+    finalizeUserTurn();
     const textDelta = message.text || "";
     const bubble = getOrCreateAssistantBubble();
     bubble.textContent += textDelta;
@@ -552,6 +629,7 @@ function handleServerMessage(message) {
 
   // 5. Real-Time Streamed Audio Chunks (24 kHz PCM) with Stale Turn Protection
   else if (message.type === "audio") {
+    finalizeUserTurn();
     if (message.data) {
       if (!audioPlayer) {
         audioPlayer = new AudioPlayer({
@@ -575,6 +653,7 @@ function handleServerMessage(message) {
 
   // 6. Tool Call Event Encountered
   else if (message.type === "tool_call") {
+    finalizeUserTurn();
     setAssistantState("thinking");
     const calls = (message.function_calls || []).map((c) => c.name);
     let toolLabel = calls.join(", ");
@@ -621,10 +700,7 @@ function handleServerMessage(message) {
 
   // 8. Turn Complete Event
   else if (message.type === "turn_complete") {
-    if (currentUserBubble) {
-      currentUserBubble.classList.remove("turn-interim");
-      currentUserBubble = null;
-    }
+    finalizeUserTurn();
     currentAssistantBubble = null;
     if (currentAssistantState !== "speaking" && currentAssistantState !== "interrupted") {
       setAssistantState(isStreaming ? "listening" : "idle");
@@ -678,8 +754,13 @@ async function startStreaming() {
     audioPlayer.stop();
   }
 
+  finalizeUserTurn();
+  currentUserTranscript = "";
+  finalUserTranscript = "";
+  isUserTurnActive = false;
   currentUserBubble = null;
   currentAssistantBubble = null;
+  if (textInput) textInput.value = "";
   chunksSent = 0;
 
   try {
@@ -764,6 +845,14 @@ async function handleSendText() {
       handleBargeIn("text_input");
     }
 
+    finalizeUserTurn();
+
+    isUserTurnActive = false;
+    currentUserTranscript = text;
+    finalUserTranscript = text;
+    const bubble = getOrCreateUserBubble();
+    bubble.textContent = text;
+    bubble.classList.remove("turn-interim");
     currentUserBubble = null;
     currentAssistantBubble = null;
 

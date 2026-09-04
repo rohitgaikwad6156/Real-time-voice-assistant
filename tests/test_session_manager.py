@@ -263,6 +263,82 @@ def test_process_gemini_transcription_events():
     }
 
 
+def test_gemini_incremental_input_transcription_delta_stream():
+    """Regression test: verify streaming incremental delta chunks from Gemini Live are dispatched cleanly."""
+    class MockWebSocket:
+        def __init__(self):
+            self.sent_messages = []
+
+        async def send_json(self, payload):
+            self.sent_messages.append(payload)
+
+    mock_ws = MockWebSocket()
+    session = VoiceSession(session_id="test_delta_sess", websocket=mock_ws)
+
+    # Real-world Gemini Live delta chunks where finished=None
+    delta_chunks = [" Re", "mind", " me", " to", " sub", "mit", " my", " as", "sign", "ment", " tomo", "rrow at 9:00 a.m."]
+    for chunk in delta_chunks:
+        msg = types.LiveServerMessage(
+            server_content=types.LiveServerContent(
+                input_transcription=types.Transcription(text=chunk, finished=None)
+            )
+        )
+        asyncio.run(session._process_gemini_message(msg))
+
+    assert len(mock_ws.sent_messages) == len(delta_chunks)
+    for i, chunk in enumerate(delta_chunks):
+        assert mock_ws.sent_messages[i] == {
+            "type": "transcript",
+            "role": "user",
+            "text": chunk,
+            "is_final": False,
+        }
+
+    # Verify that concatenating all chunks reconstructs the complete sentence
+    full_text = "".join(m["text"] for m in mock_ws.sent_messages)
+    assert full_text.strip() == "Remind me to submit my assignment tomorrow at 9:00 a.m."
+
+
+def test_gemini_input_transcription_finished_flag_handling():
+    """Verify finished=True sets is_final=True, finished=False sets is_final=False, finished=None sets is_final=False."""
+    class MockWebSocket:
+        def __init__(self):
+            self.sent_messages = []
+
+        async def send_json(self, payload):
+            self.sent_messages.append(payload)
+
+    mock_ws = MockWebSocket()
+    session = VoiceSession(session_id="test_flag_sess", websocket=mock_ws)
+
+    # 1. finished=None -> is_final=False
+    msg1 = types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text="Hello", finished=None)
+        )
+    )
+    asyncio.run(session._process_gemini_message(msg1))
+    assert mock_ws.sent_messages[-1]["is_final"] is False
+
+    # 2. finished=False -> is_final=False
+    msg2 = types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text=" world", finished=False)
+        )
+    )
+    asyncio.run(session._process_gemini_message(msg2))
+    assert mock_ws.sent_messages[-1]["is_final"] is False
+
+    # 3. finished=True -> is_final=True
+    msg3 = types.LiveServerMessage(
+        server_content=types.LiveServerContent(
+            input_transcription=types.Transcription(text=" complete sentence.", finished=True)
+        )
+    )
+    asyncio.run(session._process_gemini_message(msg3))
+    assert mock_ws.sent_messages[-1]["is_final"] is True
+
+
 def test_process_gemini_tool_call_event():
     """Test _process_gemini_message handles tool calls without executing them."""
     class MockWebSocket:

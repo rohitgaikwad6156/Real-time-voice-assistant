@@ -169,6 +169,7 @@ class VoiceSession:
             # 1. Interim (Low-latency streaming) User Input Transcription
             interim_trans = getattr(sc, "interim_input_transcription", None)
             if interim_trans is not None and getattr(interim_trans, "text", None):
+                logger.debug("RAW TRANSCRIPT EVENT: interim_input_transcription text=%r", interim_trans.text)
                 await self.send_json({
                     "type": "transcript",
                     "role": "user",
@@ -179,7 +180,15 @@ class VoiceSession:
             # 2. Final/Turn User Input Transcription
             input_trans = getattr(sc, "input_transcription", None)
             if input_trans is not None and getattr(input_trans, "text", None):
-                is_finished = getattr(input_trans, "finished", True)
+                raw_finished = getattr(input_trans, "finished", None)
+                is_finished = bool(raw_finished) if raw_finished is not None else False
+                logger.debug(
+                    "RAW TRANSCRIPT EVENT: input_transcription text=%r finished=%s | PARSED: is_final=%s type=%s",
+                    input_trans.text,
+                    raw_finished,
+                    is_finished,
+                    "final" if is_finished else "partial",
+                )
                 await self.send_json({
                     "type": "transcript",
                     "role": "user",
