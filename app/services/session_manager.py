@@ -563,12 +563,6 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
                     else:
                         try:
                             gemini_session = await session.ensure_gemini_connected()
-                            await session.send_json({
-                                "type": "transcript",
-                                "role": "user",
-                                "text": user_prompt,
-                                "is_final": True,
-                            })
                             try:
                                 await gemini_session.send_text(user_prompt)
                             except (GeminiConnectionError, Exception) as send_err:

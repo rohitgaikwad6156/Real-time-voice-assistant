@@ -601,6 +601,16 @@ function handleServerMessage(message) {
     const text = message.text || "";
 
     if (role === "user") {
+      // Filter out backend echoes of manually typed and sent text prompts
+      const trimmedText = (text || "").trim();
+      if (pendingSentText && (trimmedText === pendingSentText.trim() || trimmedText === pendingSentText)) {
+        pendingSentText = null;
+        if (message.is_final) {
+          setAssistantState("thinking");
+        }
+        return;
+      }
+
       setAssistantState("listening");
       appendOrUpdateUserTranscript(text);
 
@@ -835,30 +845,53 @@ if (voiceOrb) {
 // Text Input Handling
 // ==============================================================================
 
+let isSendingText = false;
+let pendingSentText = null;
+
 async function handleSendText() {
+  if (isSendingText) return;
   await ensureAudioPlayerReady();
   const text = (textInput?.value || "").trim();
   if (!text) return;
 
+  // Clear the input box immediately so user text disappears upon clicking send / Enter
+  if (textInput) {
+    textInput.value = "";
+  }
+
   if (websocket && websocket.readyState === WebSocket.OPEN) {
-    if (audioPlayer && audioPlayer.isPlaying) {
-      handleBargeIn("text_input");
+    isSendingText = true;
+    try {
+      if (audioPlayer && audioPlayer.isPlaying) {
+        handleBargeIn("text_input");
+      }
+
+      // Finalize any in-progress speech turn before sending manual text
+      finalizeUserTurn();
+
+      // Reset speech transcription turn state so this text isn't treated as incoming speech
+      isUserTurnActive = false;
+      currentUserTranscript = "";
+      finalUserTranscript = "";
+      pendingSentText = text;
+
+      // Render exactly ONE user bubble for the typed message
+      const bubble = getOrCreateUserBubble();
+      bubble.textContent = text;
+      bubble.classList.remove("turn-interim");
+      currentUserBubble = null;
+      currentAssistantBubble = null;
+
+      setAssistantState("thinking", "Sending prompt...");
+      websocket.send(JSON.stringify({ type: "text", text }));
+      scrollConversationToBottom();
+    } finally {
+      isSendingText = false;
+      // Guarantee input box remains empty
+      if (textInput) {
+        textInput.value = "";
+      }
     }
-
-    finalizeUserTurn();
-
-    isUserTurnActive = false;
-    currentUserTranscript = text;
-    finalUserTranscript = text;
-    const bubble = getOrCreateUserBubble();
-    bubble.textContent = text;
-    bubble.classList.remove("turn-interim");
-    currentUserBubble = null;
-    currentAssistantBubble = null;
-
-    setAssistantState("thinking", "Sending prompt...");
-    websocket.send(JSON.stringify({ type: "text", text }));
-    if (textInput) textInput.value = "";
     return;
   }
 
@@ -868,6 +901,13 @@ async function handleSendText() {
 
 if (textButton) {
   textButton.onclick = handleSendText;
+}
+
+if (textForm) {
+  textForm.addEventListener("submit", (e) => {
+    e.preventDefault();
+    handleSendText();
+  });
 }
 
 if (textInput) {
