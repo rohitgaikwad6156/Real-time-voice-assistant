@@ -27,9 +27,13 @@ DEFAULT_VOICE_NAME = "Puck"
 DEFAULT_MODALITIES = ["AUDIO"]
 DEFAULT_SYSTEM_INSTRUCTION = (
     "You are a helpful, conversational, and natural AI real-time voice assistant. "
+    "Always transcribe, understand, and process speech in English using the Latin/English script. "
+    "Never transliterate English speech into non-Latin scripts (such as Telugu, Devanagari, Tamil, etc.). "
+    "Always formulate responses in English unless the user explicitly asks to speak in a different language. "
     "Keep responses concise, clear, and easy to follow when spoken aloud. "
     "Avoid markdown formatting or tables."
 )
+DEFAULT_LANGUAGE_CODES = ["en-US", "en-IN", "en"]
 
 
 # ==============================================================================
@@ -71,6 +75,13 @@ class GeminiLiveConfig:
     )
     system_instruction: str = field(
         default_factory=lambda: os.getenv("GEMINI_SYSTEM_PROMPT", DEFAULT_SYSTEM_INSTRUCTION)
+    )
+    language_codes: List[str] = field(
+        default_factory=lambda: [
+            c.strip()
+            for c in os.getenv("GEMINI_LANGUAGE_CODES", "en-US,en-IN,en").split(",")
+            if c.strip()
+        ]
     )
     tools: Optional[List[types.Tool]] = None
 
@@ -142,8 +153,12 @@ class GeminiLiveConfig:
             system_instruction=system_instruction,
             tools=live_tools,
             thinking_config=thinking_config,
-            input_audio_transcription=types.AudioTranscriptionConfig(),
-            output_audio_transcription=types.AudioTranscriptionConfig(),
+            input_audio_transcription=types.AudioTranscriptionConfig(
+                language_codes=self.language_codes,
+            ),
+            output_audio_transcription=types.AudioTranscriptionConfig(
+                language_codes=self.language_codes,
+            ),
         )
 
     def get_public_summary(self) -> dict:
@@ -154,6 +169,7 @@ class GeminiLiveConfig:
         return {
             "model": self.model,
             "voice_name": self.voice_name,
+            "language_codes": self.language_codes,
             "response_modalities": self.response_modalities,
             "api_key_configured": bool(self.api_key and self.api_key.strip()),
         }

@@ -55,7 +55,20 @@ def test_valid_configuration_and_types():
     assert live_config.response_modalities == [types.Modality.AUDIO]
     assert live_config.speech_config.voice_config.prebuilt_voice_config.voice_name == "Puck"
     assert isinstance(live_config.input_audio_transcription, types.AudioTranscriptionConfig)
+    assert live_config.input_audio_transcription.language_codes == ["en-US", "en-IN", "en"]
     assert isinstance(live_config.output_audio_transcription, types.AudioTranscriptionConfig)
+    assert live_config.output_audio_transcription.language_codes == ["en-US", "en-IN", "en"]
+
+
+def test_custom_language_codes():
+    """Verify custom language_codes can be configured."""
+    config = GeminiLiveConfig(
+        api_key="test_key_12345",
+        language_codes=["en-GB", "en"],
+    )
+    live_config = config.to_live_connect_config()
+    assert live_config.input_audio_transcription.language_codes == ["en-GB", "en"]
+    assert live_config.output_audio_transcription.language_codes == ["en-GB", "en"]
 
 
 def test_public_summary_never_exposes_api_key():
