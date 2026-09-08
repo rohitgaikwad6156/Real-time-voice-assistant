@@ -1,0 +1,234 @@
+(() => {
+  const BACKEND = (location.hostname === "localhost" || location.hostname === "127.0.0.1")
+    ? location.origin
+    : "https://real-time-voice-assistant-9bh1.onrender.com";
+
+  const TOKEN_KEY = "voiceAssistantToken";
+  const USER_KEY = "voiceAssistantUser";
+  const CONVERSATION_KEY = "voiceAssistantConversationId";
+
+  const token = localStorage.getItem(TOKEN_KEY);
+  const activeConversationId = localStorage.getItem(CONVERSATION_KEY);
+
+  if (token) {
+    const params = new URLSearchParams({ token });
+    if (activeConversationId) params.set("conversation_id", activeConversationId);
+    window.APP_CONFIG = {
+      API_URL: BACKEND,
+      WS_URL: `${BACKEND.replace(/^http/, "ws")}/ws/voice?${params.toString()}`,
+    };
+  }
+
+  function authHeaders() {
+    return {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${localStorage.getItem(TOKEN_KEY) || ""}`,
+    };
+  }
+
+  async function api(path, options = {}) {
+    const response = await fetch(`${BACKEND}${path}`, {
+      ...options,
+      headers: { ...(options.headers || {}), ...(options.auth === false ? { "Content-Type": "application/json" } : authHeaders()) },
+    });
+    let data = {};
+    try { data = await response.json(); } catch (_) {}
+    if (!response.ok) throw new Error(data.detail || "Request failed.");
+    return data;
+  }
+
+  function injectStyles() {
+    const style = document.createElement("style");
+    style.textContent = `
+      .auth-overlay{position:fixed;inset:0;z-index:9999;background:#07101f;display:flex;align-items:center;justify-content:center;padding:24px;font-family:'Plus Jakarta Sans',sans-serif}
+      .auth-card{width:min(430px,100%);background:#0f172a;border:1px solid #24324a;border-radius:22px;padding:30px;box-shadow:0 30px 80px rgba(0,0,0,.45)}
+      .auth-logo{font-size:12px;font-weight:800;letter-spacing:.16em;color:#38bdf8;margin-bottom:8px}.auth-title{color:#f8fafc;font-size:28px;margin:0 0 8px}.auth-sub{color:#94a3b8;font-size:14px;margin-bottom:24px}
+      .auth-tabs{display:flex;background:#0b1220;border-radius:12px;padding:4px;margin-bottom:20px}.auth-tab{flex:1;border:0;border-radius:9px;padding:10px;background:transparent;color:#94a3b8;font-weight:700;cursor:pointer}.auth-tab.active{background:#1d4ed8;color:white}
+      .auth-field{display:block;margin:12px 0}.auth-field span{display:block;color:#cbd5e1;font-size:13px;margin-bottom:7px}.auth-field input{width:100%;box-sizing:border-box;padding:12px 13px;border-radius:11px;border:1px solid #334155;background:#0b1220;color:white;outline:none}.auth-field input:focus{border-color:#38bdf8}
+      .auth-submit{width:100%;margin-top:10px;padding:13px;border:0;border-radius:11px;background:#2563eb;color:white;font-weight:800;cursor:pointer}.auth-error{min-height:18px;color:#fb7185;font-size:13px;margin-top:10px}
+      .history-sidebar{position:fixed;left:0;top:0;bottom:0;width:245px;background:#0a1220;border-right:1px solid #1e293b;z-index:40;padding:18px 14px;box-sizing:border-box;overflow:auto;font-family:'Plus Jakarta Sans',sans-serif}
+      .history-brand{color:white;font-weight:800;font-size:14px;margin-bottom:16px}.history-new,.history-reminders{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #334155;background:#111c31;color:#e2e8f0;text-align:left;cursor:pointer;margin-bottom:8px;font-weight:700}
+      .history-label{color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:18px 6px 8px}.history-item{padding:10px;border-radius:9px;color:#cbd5e1;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.history-item:hover,.history-item.active{background:#17233a;color:white}
+      .history-user{margin-top:18px;padding-top:14px;border-top:1px solid #1e293b;color:#cbd5e1;font-size:12px}.history-user strong{display:block;color:white;margin-bottom:3px}.history-logout{margin-top:9px;border:0;background:transparent;color:#f87171;padding:0;cursor:pointer}
+      body.has-history-sidebar .app-layout{margin-left:245px;width:calc(100% - 245px)}
+      .reminder-modal{position:fixed;inset:0;z-index:9998;background:rgba(2,6,23,.72);display:flex;align-items:center;justify-content:center;padding:20px}.reminder-card{width:min(520px,100%);max-height:70vh;overflow:auto;background:#0f172a;border:1px solid #334155;border-radius:18px;padding:22px;color:white}.reminder-row{padding:12px 0;border-bottom:1px solid #1e293b}.reminder-row small{display:block;color:#94a3b8;margin-top:4px}.reminder-close{float:right;border:0;background:#1e293b;color:white;border-radius:8px;padding:7px 10px;cursor:pointer}
+      @media(max-width:900px){.history-sidebar{display:none}body.has-history-sidebar .app-layout{margin-left:0;width:100%}}
+    `;
+    document.head.appendChild(style);
+  }
+
+  function showAuth() {
+    if (document.querySelector('.auth-overlay')) return;
+    const overlay = document.createElement("div");
+    overlay.className = "auth-overlay";
+    overlay.innerHTML = `
+      <div class="auth-card">
+        <div class="auth-logo">REAL-TIME VOICE ASSISTANT</div>
+        <h2 class="auth-title">Welcome</h2>
+        <div class="auth-sub">Login to keep your conversations and reminders private to your account.</div>
+        <div class="auth-tabs"><button class="auth-tab active" data-mode="login">Login</button><button class="auth-tab" data-mode="register">Register</button></div>
+        <form id="voiceAuthForm">
+          <label class="auth-field" id="nameField" style="display:none"><span>Name</span><input id="authName" autocomplete="name"></label>
+          <label class="auth-field"><span>Email</span><input id="authEmail" type="email" autocomplete="email" required></label>
+          <label class="auth-field"><span>Password</span><input id="authPassword" type="password" autocomplete="current-password" required minlength="6"></label>
+          <button class="auth-submit" type="submit">Login</button>
+          <div class="auth-error" id="authError"></div>
+        </form>
+      </div>`;
+    document.body.appendChild(overlay);
+
+    let mode = "login";
+    overlay.querySelectorAll(".auth-tab").forEach(btn => btn.onclick = () => {
+      mode = btn.dataset.mode;
+      overlay.querySelectorAll(".auth-tab").forEach(b => b.classList.toggle("active", b === btn));
+      overlay.querySelector("#nameField").style.display = mode === "register" ? "block" : "none";
+      overlay.querySelector(".auth-submit").textContent = mode === "register" ? "Create account" : "Login";
+      overlay.querySelector("#authPassword").autocomplete = mode === "register" ? "new-password" : "current-password";
+      overlay.querySelector("#authError").textContent = "";
+    });
+
+    overlay.querySelector("#voiceAuthForm").onsubmit = async (event) => {
+      event.preventDefault();
+      const error = overlay.querySelector("#authError");
+      const submit = overlay.querySelector(".auth-submit");
+      error.textContent = "";
+      submit.disabled = true;
+      submit.textContent = mode === "register" ? "Creating..." : "Logging in...";
+      try {
+        const body = {
+          email: overlay.querySelector("#authEmail").value.trim(),
+          password: overlay.querySelector("#authPassword").value,
+        };
+        if (mode === "register") body.name = overlay.querySelector("#authName").value.trim();
+        const result = await api(`/api/auth/${mode}`, { method: "POST", body: JSON.stringify(body), auth: false });
+        localStorage.setItem(TOKEN_KEY, result.access_token);
+        localStorage.setItem(USER_KEY, JSON.stringify(result.user));
+        const created = await fetch(`${BACKEND}/api/conversations`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json", Authorization: `Bearer ${result.access_token}` },
+          body: JSON.stringify({ title: "New conversation" }),
+        }).then(r => r.json());
+        if (created.conversation?.id) localStorage.setItem(CONVERSATION_KEY, created.conversation.id);
+        location.reload();
+      } catch (err) {
+        error.textContent = err.message;
+        submit.disabled = false;
+        submit.textContent = mode === "register" ? "Create account" : "Login";
+      }
+    };
+  }
+
+  async function showReminders() {
+    try {
+      const data = await api("/api/reminders");
+      const modal = document.createElement("div");
+      modal.className = "reminder-modal";
+      const rows = data.reminders?.length
+        ? data.reminders.map(r => `<div class="reminder-row"><strong>${escapeHtml(r.title)}</strong><small>${escapeHtml(r.remind_at)} · ${escapeHtml(r.status || "pending")}</small></div>`).join("")
+        : `<p style="color:#94a3b8">No reminders yet. Try saying “Remind me to study DSA tomorrow at 7 PM.”</p>`;
+      modal.innerHTML = `<div class="reminder-card"><button class="reminder-close">Close</button><h3>Your reminders</h3>${rows}</div>`;
+      modal.querySelector(".reminder-close").onclick = () => modal.remove();
+      modal.onclick = e => { if (e.target === modal) modal.remove(); };
+      document.body.appendChild(modal);
+    } catch (err) { alert(err.message); }
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>'"]/g, c => ({"&":"&amp;","<":"&lt;",">":"&gt;","'":"&#39;",'"':"&quot;"}[c]));
+  }
+
+  async function renderHistoryMessages(conversationId) {
+    try {
+      const data = await api(`/api/conversations/${conversationId}/messages`);
+      const list = document.getElementById("conversationList");
+      if (!list || !data.messages?.length) return;
+      list.innerHTML = "";
+      let turns = 0;
+      for (const msg of data.messages) {
+        const div = document.createElement("div");
+        div.className = `turn ${msg.role === "user" ? "user-turn" : "assistant-turn"}`;
+        div.innerHTML = `<div class="turn-header-row"><span class="turn-role-tag">${msg.role === "user" ? "USER" : "ASSISTANT"}</span></div><div class="turn-bubble"></div>`;
+        div.querySelector(".turn-bubble").textContent = msg.text;
+        list.appendChild(div);
+        if (msg.role === "user") turns++;
+      }
+      const counter = document.getElementById("turnCounter");
+      if (counter) counter.textContent = `${turns} ${turns === 1 ? "turn" : "turns"}`;
+      list.scrollTop = list.scrollHeight;
+    } catch (err) { console.warn("Could not load history", err); }
+  }
+
+  async function initAuthenticatedUI() {
+    try {
+      const me = await api("/api/auth/me");
+      localStorage.setItem(USER_KEY, JSON.stringify(me.user));
+      const data = await api("/api/conversations");
+      let conversations = data.conversations || [];
+      let active = localStorage.getItem(CONVERSATION_KEY);
+      if (!active || !conversations.some(c => c.id === active)) {
+        if (conversations.length) {
+          active = conversations[0].id;
+          localStorage.setItem(CONVERSATION_KEY, active);
+        } else {
+          const created = await api("/api/conversations", { method: "POST", body: JSON.stringify({ title: "New conversation" }) });
+          active = created.conversation.id;
+          localStorage.setItem(CONVERSATION_KEY, active);
+          conversations = [created.conversation];
+          location.reload();
+          return;
+        }
+      }
+
+      document.body.classList.add("has-history-sidebar");
+      const sidebar = document.createElement("aside");
+      sidebar.className = "history-sidebar";
+      sidebar.innerHTML = `
+        <div class="history-brand">🎙️ Voice Assistant</div>
+        <button class="history-new">＋ New chat</button>
+        <button class="history-reminders">⏰ Reminders</button>
+        <div class="history-label">Conversations</div>
+        <div class="history-list"></div>
+        <div class="history-user"><strong>${escapeHtml(me.user.name)}</strong>${escapeHtml(me.user.email)}<br><button class="history-logout">Log out</button></div>`;
+      document.body.appendChild(sidebar);
+      const list = sidebar.querySelector(".history-list");
+      conversations.forEach(c => {
+        const item = document.createElement("div");
+        item.className = `history-item ${c.id === active ? "active" : ""}`;
+        item.textContent = c.title || "New conversation";
+        item.title = c.title || "New conversation";
+        item.onclick = () => { localStorage.setItem(CONVERSATION_KEY, c.id); location.reload(); };
+        list.appendChild(item);
+      });
+      sidebar.querySelector(".history-new").onclick = async () => {
+        const created = await api("/api/conversations", { method: "POST", body: JSON.stringify({ title: "New conversation" }) });
+        localStorage.setItem(CONVERSATION_KEY, created.conversation.id);
+        location.reload();
+      };
+      sidebar.querySelector(".history-reminders").onclick = showReminders;
+      sidebar.querySelector(".history-logout").onclick = () => {
+        localStorage.removeItem(TOKEN_KEY);
+        localStorage.removeItem(USER_KEY);
+        localStorage.removeItem(CONVERSATION_KEY);
+        location.reload();
+      };
+      setTimeout(() => renderHistoryMessages(active), 400);
+    } catch (err) {
+      console.warn("Authentication check failed", err);
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+      localStorage.removeItem(CONVERSATION_KEY);
+      showAuth();
+    }
+  }
+
+  injectStyles();
+  const boot = () => {
+    if (!localStorage.getItem(TOKEN_KEY)) showAuth();
+    else initAuthenticatedUI();
+  };
+  if (document.readyState === "loading") {
+    window.addEventListener("DOMContentLoaded", boot, { once: true });
+  } else {
+    boot();
+  }
+})();
