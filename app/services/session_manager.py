@@ -16,14 +16,7 @@ from google.genai import types
 
 from app.database.mongodb import ensure_conversation, save_message
 from app.services.auth import decode_access_token
-from app.services.gemini_client import (
-    GeminiConfigError,
-    GeminiConnectionError,
-    GeminiError,
-    GeminiLiveClient,
-    GeminiLiveSession,
-    get_gemini_client,
-)
+from app.services.gemini_client import GeminiLiveClient, GeminiLiveSession, get_gemini_client
 from app.services.tool_executor import ToolExecutor, get_default_tool_executor
 
 logger = logging.getLogger("voice_assistant.session_manager")
@@ -164,10 +157,7 @@ class VoiceSession:
             if output_trans is not None and getattr(output_trans, "text", None):
                 text = output_trans.text
                 self._assistant_buffer += text
-                await self.send_json({
-                    "type": "transcript", "role": "assistant", "text": text,
-                    "is_final": bool(getattr(output_trans, "finished", False)),
-                })
+                await self.send_json({"type": "transcript", "role": "assistant", "text": text, "is_final": bool(getattr(output_trans, "finished", False))})
 
             model_turn = getattr(sc, "model_turn", None)
             if model_turn is not None:
@@ -214,10 +204,7 @@ class VoiceSession:
                 for response in responses:
                     raw = getattr(response, "response", {}) or {}
                     result = raw.get("result", {}) if isinstance(raw, dict) else {}
-                    await self.send_json({
-                        "type": "tool_result", "name": getattr(response, "name", ""),
-                        "call_id": getattr(response, "id", ""), "result": result,
-                    })
+                    await self.send_json({"type": "tool_result", "name": getattr(response, "name", ""), "call_id": getattr(response, "id", ""), "result": result})
                 if self.gemini_session is not None and responses:
                     await self.gemini_session.send_tool_response(responses)
 
@@ -292,7 +279,18 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
     session = session_manager.create_session(websocket)
     try:
-        await session.send_status("connected")
+        # Browser clients may authenticate directly in the WebSocket URL. This lets
+        # the existing real-time client stay simple while still isolating user data.
+        token = websocket.query_params.get("token")
+        conversation_id = websocket.query_params.get("conversation_id")
+        if token:
+            try:
+                await session.authenticate(token, conversation_id)
+            except Exception as exc:
+                await session.send_status("auth_error", sanitize_error_message(str(exc)))
+        else:
+            await session.send_status("connected")
+
         while session.is_active:
             data = await websocket.receive()
             if data.get("type") == "websocket.disconnect":
