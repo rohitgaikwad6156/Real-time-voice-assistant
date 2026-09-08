@@ -1,9 +1,4 @@
-"""WebSocket session manager for real-time voice assistant connections.
-
-Maintains client session lifecycles, handles incoming WebSocket messages,
-coordinates bidirectional streaming with Google Gemini Live API, and
-dispatches streamed text, audio, tool call, and completion events to the client.
-"""
+"""Authenticated WebSocket session manager for Gemini Live voice conversations."""
 
 from __future__ import annotations
 
@@ -11,12 +6,16 @@ import asyncio
 import base64
 import json
 import logging
+import os
+import re
 import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import WebSocket, WebSocketDisconnect
 from google.genai import types
 
+from app.database.mongodb import ensure_conversation, save_message
+from app.services.auth import decode_access_token
 from app.services.gemini_client import (
     GeminiConfigError,
     GeminiConnectionError,
@@ -27,83 +26,83 @@ from app.services.gemini_client import (
 )
 from app.services.tool_executor import ToolExecutor, get_default_tool_executor
 
-import os
-import re
-
 logger = logging.getLogger("voice_assistant.session_manager")
 
 
 def sanitize_error_message(raw_msg: str) -> str:
-    """Remove API keys and credentials from log messages and client errors."""
     if not raw_msg:
         return "An unexpected error occurred."
     sanitized = str(raw_msg)
-    for env_var in ("GEMINI_API_KEY", "OPENAI_API_KEY", "WEATHER_API_KEY"):
+    for env_var in ("GEMINI_API_KEY", "OPENAI_API_KEY", "WEATHER_API_KEY", "MONGODB_URI", "JWT_SECRET"):
         val = os.getenv(env_var, "").strip()
         if val and len(val) >= 8 and val in sanitized:
             sanitized = sanitized.replace(val, "[REDACTED_SECRET]")
-
-    # Redact standard Google API key pattern (AIza...)
-    sanitized = re.sub(r"AIza[0-9A-Za-z\-_]{35}", "[REDACTED_KEY]", sanitized)
-    return sanitized
+    return re.sub(r"AIza[0-9A-Za-z\-_]{35}", "[REDACTED_KEY]", sanitized)
 
 
 class VoiceSession:
-    """Represents an active client WebSocket session with Gemini Live connectivity."""
-
-    def __init__(
-        self,
-        session_id: str,
-        websocket: WebSocket,
-        tool_executor: Optional[ToolExecutor] = None,
-    ):
+    def __init__(self, session_id: str, websocket: WebSocket):
         self.session_id = session_id
         self.websocket = websocket
-        self.tool_executor = tool_executor or get_default_tool_executor()
         self.is_active = True
+        self.user_id: Optional[str] = None
+        self.user_email: Optional[str] = None
+        self.conversation_id: Optional[str] = None
+        self.tool_executor: ToolExecutor = get_default_tool_executor()
         self.gemini_client: Optional[GeminiLiveClient] = None
         self.gemini_session: Optional[GeminiLiveSession] = None
         self._gemini_cm: Optional[Any] = None
         self._receive_task: Optional[asyncio.Task] = None
-        self.audio_chunks_received: int = 0
-        self.total_bytes_received: int = 0
-        self.turn_id: int = 1
+        self.audio_chunks_received = 0
+        self.total_bytes_received = 0
+        self.turn_id = 1
         self._executed_call_ids: set[str] = set()
-        self._stream_error_sent: bool = False
+        self._stream_error_sent = False
+        self._user_buffer = ""
+        self._assistant_buffer = ""
+        self._user_saved_for_turn = False
 
-    async def handle_interrupt(self) -> None:
-        """Handle user barge-in interruption."""
-        self.turn_id += 1
-        logger.info("Session %s interrupted. Advanced to turn_id=%d", self.session_id, self.turn_id)
-        await self.send_json({
-            "type": "interrupted",
-            "turn_id": self.turn_id,
-            "session_id": self.session_id,
-        })
+    @property
+    def authenticated(self) -> bool:
+        return bool(self.user_id and self.conversation_id)
+
+    async def authenticate(self, token: str, conversation_id: Optional[str] = None) -> None:
+        payload = decode_access_token(token)
+        self.user_id = str(payload["sub"])
+        self.user_email = str(payload.get("email", ""))
+        conversation = await asyncio.to_thread(ensure_conversation, self.user_id, conversation_id)
+        self.conversation_id = conversation["id"]
+        self.tool_executor = get_default_tool_executor(user_id=self.user_id)
+        await self.send_status(status="authenticated", conversation=conversation)
+
+    async def _persist_user(self, text: str) -> None:
+        if not self.authenticated or not text.strip() or self._user_saved_for_turn:
+            return
+        await asyncio.to_thread(save_message, self.user_id, self.conversation_id, "user", text.strip())
+        self._user_saved_for_turn = True
+
+    async def _persist_assistant(self, text: str) -> None:
+        if not self.authenticated or not text.strip():
+            return
+        await asyncio.to_thread(save_message, self.user_id, self.conversation_id, "assistant", text.strip())
+
+    def _reset_turn_buffers(self) -> None:
+        self._user_buffer = ""
+        self._assistant_buffer = ""
+        self._user_saved_for_turn = False
 
     async def ensure_gemini_connected(self) -> GeminiLiveSession:
-        """Lazily connect to Gemini Live API and launch downstream message listener.
-
-        Raises:
-            GeminiConfigError: If GEMINI_API_KEY is not configured.
-            GeminiConnectionError: If connection to Gemini Live fails.
-        """
         if self.gemini_session is not None:
             return self.gemini_session
-
         if self.gemini_client is None:
             self.gemini_client = get_gemini_client()
-
         self._gemini_cm = self.gemini_client.connect()
         self.gemini_session = await self._gemini_cm.__aenter__()
-        logger.info("Session %s connected to Gemini Live API.", self.session_id)
-
-        # Launch background task to continuously listen for Gemini response events
         self._receive_task = asyncio.create_task(self._listen_to_gemini())
+        logger.info("Session %s connected to Gemini Live API", self.session_id)
         return self.gemini_session
 
     async def reset_gemini_session(self, close_task: bool = True) -> None:
-        """Reset and clean up an existing Gemini Live session so it can be reconnected."""
         if close_task and self._receive_task is not None and self._receive_task != asyncio.current_task():
             self._receive_task.cancel()
             try:
@@ -111,495 +110,275 @@ class VoiceSession:
             except (asyncio.CancelledError, Exception):
                 pass
         self._receive_task = None
-
         if self._gemini_cm is not None:
             try:
                 await self._gemini_cm.__aexit__(None, None, None)
-            except Exception as exc:
-                logger.debug("Error closing Gemini session for %s: %s", self.session_id, exc)
-            self._gemini_cm = None
-
+            except Exception:
+                pass
+        self._gemini_cm = None
         self.gemini_session = None
 
     async def _listen_to_gemini(self) -> None:
-        """Continuously receive events from Gemini Live API and forward to the client."""
-        logger.info("Session %s started Gemini receive loop.", self.session_id)
         try:
             while self.is_active and self.gemini_session is not None:
                 async for message in self.gemini_session.receive():
                     if not self.is_active:
                         break
                     await self._process_gemini_message(message)
-                logger.info("Session %s turn ended. Listening for next turn...", self.session_id)
-
         except asyncio.CancelledError:
-            logger.debug("Gemini receive loop cancelled for %s", self.session_id)
-        except (GeminiError, Exception) as exc:
-            clean_err = sanitize_error_message(str(exc))
-            logger.error("Error in Gemini receive loop for %s: %s", self.session_id, clean_err)
+            pass
+        except Exception as exc:
+            clean = sanitize_error_message(str(exc))
+            logger.error("Gemini receive loop failed for %s: %s", self.session_id, clean)
             if not self._stream_error_sent:
                 self._stream_error_sent = True
-                await self.send_status(status="error", message=f"Gemini connection error: {clean_err}")
+                await self.send_status("error", f"Gemini connection error: {clean}")
         finally:
-            logger.info("Session %s exited Gemini receive loop.", self.session_id)
             if self.is_active:
                 await self.reset_gemini_session(close_task=False)
 
     async def _process_gemini_message(self, message: types.LiveServerMessage) -> None:
-        """Process an incoming server message from Gemini Live API."""
-        # 1. Process server content (text, audio, transcriptions, completion, interruption)
-        if getattr(message, "server_content", None) is not None:
-            sc = message.server_content
-
-            # Check for server-side interruption from Gemini Live API
+        sc = getattr(message, "server_content", None)
+        if sc is not None:
             if getattr(sc, "interrupted", False) and not getattr(sc, "turn_complete", False):
                 self.turn_id += 1
-                logger.info(
-                    "Session %s: Gemini Live server reported model interruption. New turn_id=%d",
-                    self.session_id,
-                    self.turn_id,
-                )
-                await self.send_json({
-                    "type": "interrupted",
-                    "turn_id": self.turn_id,
-                    "session_id": self.session_id,
-                })
+                await self.send_json({"type": "interrupted", "turn_id": self.turn_id, "session_id": self.session_id})
                 return
 
-            # 1. Interim (Low-latency streaming) User Input Transcription
-            interim_trans = getattr(sc, "interim_input_transcription", None)
-            if interim_trans is not None and getattr(interim_trans, "text", None):
-                logger.debug("RAW TRANSCRIPT EVENT: interim_input_transcription text=%r", interim_trans.text)
-                await self.send_json({
-                    "type": "transcript",
-                    "role": "user",
-                    "text": interim_trans.text,
-                    "is_final": False,
-                })
+            interim = getattr(sc, "interim_input_transcription", None)
+            if interim is not None and getattr(interim, "text", None):
+                text = interim.text
+                self._user_buffer = text if len(text) >= len(self._user_buffer) else self._user_buffer + text
+                await self.send_json({"type": "transcript", "role": "user", "text": text, "is_final": False})
 
-            # 2. Final/Turn User Input Transcription
             input_trans = getattr(sc, "input_transcription", None)
             if input_trans is not None and getattr(input_trans, "text", None):
-                raw_finished = getattr(input_trans, "finished", None)
-                is_finished = bool(raw_finished) if raw_finished is not None else False
-                logger.debug(
-                    "RAW TRANSCRIPT EVENT: input_transcription text=%r finished=%s | PARSED: is_final=%s type=%s",
-                    input_trans.text,
-                    raw_finished,
-                    is_finished,
-                    "final" if is_finished else "partial",
-                )
-                await self.send_json({
-                    "type": "transcript",
-                    "role": "user",
-                    "text": input_trans.text,
-                    "is_final": is_finished,
-                })
+                text = input_trans.text
+                self._user_buffer = text if len(text) >= len(self._user_buffer) else self._user_buffer + text
+                finished = bool(getattr(input_trans, "finished", False))
+                await self.send_json({"type": "transcript", "role": "user", "text": text, "is_final": finished})
+                if finished:
+                    await self._persist_user(self._user_buffer)
 
-            # 3. Output Audio Transcription (Assistant Speech)
             output_trans = getattr(sc, "output_transcription", None)
             if output_trans is not None and getattr(output_trans, "text", None):
+                text = output_trans.text
+                self._assistant_buffer += text
                 await self.send_json({
-                    "type": "transcript",
-                    "role": "assistant",
-                    "text": output_trans.text,
-                    "is_final": getattr(output_trans, "finished", False),
+                    "type": "transcript", "role": "assistant", "text": text,
+                    "is_final": bool(getattr(output_trans, "finished", False)),
                 })
 
-            # 4. Model response parts (streamed text and audio)
-            if getattr(sc, "model_turn", None) is not None:
-                parts = getattr(sc.model_turn, "parts", []) or []
-                for part in parts:
-                    # Streamed Text Delta
+            model_turn = getattr(sc, "model_turn", None)
+            if model_turn is not None:
+                for part in getattr(model_turn, "parts", []) or []:
                     part_text = getattr(part, "text", None)
                     if part_text:
-                        await self.send_json({
-                            "type": "text",
-                            "role": "assistant",
-                            "text": part_text,
-                            "turn_id": self.turn_id,
-                        })
-
-                    # Streamed Audio Chunk (PCM 24 kHz)
+                        if not self._assistant_buffer:
+                            self._assistant_buffer += part_text
+                        await self.send_json({"type": "text", "role": "assistant", "text": part_text, "turn_id": self.turn_id})
                     inline_data = getattr(part, "inline_data", None)
                     if inline_data is not None and inline_data.data:
-                        b64_audio = base64.b64encode(inline_data.data).decode("utf-8")
-                        mime_type = inline_data.mime_type or "audio/pcm;rate=24000"
-                        logger.info("Session %s streaming audio chunk: %d bytes (turn_id=%d).", self.session_id, len(inline_data.data), self.turn_id)
                         await self.send_json({
                             "type": "audio",
-                            "data": b64_audio,
-                            "mime_type": mime_type,
+                            "data": base64.b64encode(inline_data.data).decode("utf-8"),
+                            "mime_type": inline_data.mime_type or "audio/pcm;rate=24000",
                             "turn_id": self.turn_id,
                         })
 
-            # 5. Turn complete event
             if getattr(sc, "turn_complete", False):
-                logger.info("Session %s received turn_complete for turn_id=%d.", self.session_id, self.turn_id)
-                await self.send_json({
-                    "type": "turn_complete",
-                    "turn_id": self.turn_id,
-                    "session_id": self.session_id,
-                })
+                if self._user_buffer:
+                    await self._persist_user(self._user_buffer)
+                if self._assistant_buffer:
+                    await self._persist_assistant(self._assistant_buffer)
+                await self.send_json({"type": "turn_complete", "turn_id": self.turn_id, "session_id": self.session_id})
+                self.turn_id += 1
+                self._reset_turn_buffers()
 
-        # 2. Process tool call events (Execute tools & return responses to Gemini)
-        if getattr(message, "tool_call", None) is not None:
-            tc = message.tool_call
-            function_calls = getattr(tc, "function_calls", []) or []
-            if function_calls:
-                unexecuted_calls = []
-                call_list: List[Dict[str, Any]] = []
-                for fc in function_calls:
-                    c_id = getattr(fc, "id", "")
-                    if c_id and c_id in self._executed_call_ids:
-                        logger.warning("Session %s skipping already executed tool call '%s'", self.session_id, c_id)
-                        continue
-                    if c_id:
-                        self._executed_call_ids.add(c_id)
-                    unexecuted_calls.append(fc)
-                    call_list.append({
-                        "name": getattr(fc, "name", ""),
-                        "id": c_id,
-                        "args": getattr(fc, "args", {}) or {},
-                    })
-
-                if not unexecuted_calls:
-                    return
-
-                logger.info("Session %s executing tool calls: %s", self.session_id, [c["name"] for c in call_list])
-                # Notify frontend of tool invocation
-                await self.send_json({
-                    "type": "tool_call",
-                    "function_calls": call_list,
-                    "handled": True,
-                })
-
-                # Execute tools via ToolExecutor
-                tool_responses = await self.tool_executor.execute_calls(unexecuted_calls)
-
-                # Dispatch tool results to client
-                for resp in tool_responses:
-                    raw_resp = getattr(resp, "response", {}) or {}
-                    res_data = raw_resp.get("result", {}) if isinstance(raw_resp, dict) else {}
+        tool_call = getattr(message, "tool_call", None)
+        if tool_call is not None:
+            calls = getattr(tool_call, "function_calls", []) or []
+            unexecuted: List[Any] = []
+            call_list: List[Dict[str, Any]] = []
+            for fc in calls:
+                call_id = getattr(fc, "id", "")
+                if call_id and call_id in self._executed_call_ids:
+                    continue
+                if call_id:
+                    self._executed_call_ids.add(call_id)
+                unexecuted.append(fc)
+                call_list.append({"name": getattr(fc, "name", ""), "id": call_id, "args": getattr(fc, "args", {}) or {}})
+            if unexecuted:
+                await self.send_json({"type": "tool_call", "function_calls": call_list, "handled": True})
+                responses = await self.tool_executor.execute_calls(unexecuted)
+                for response in responses:
+                    raw = getattr(response, "response", {}) or {}
+                    result = raw.get("result", {}) if isinstance(raw, dict) else {}
                     await self.send_json({
-                        "type": "tool_result",
-                        "name": getattr(resp, "name", ""),
-                        "call_id": getattr(resp, "id", ""),
-                        "result": res_data,
+                        "type": "tool_result", "name": getattr(response, "name", ""),
+                        "call_id": getattr(response, "id", ""), "result": result,
                     })
+                if self.gemini_session is not None and responses:
+                    await self.gemini_session.send_tool_response(responses)
 
-                # Return tool responses to Gemini Live so it continues conversation
-                if self.gemini_session is not None and tool_responses:
-                    try:
-                        await self.gemini_session.send_tool_response(tool_responses)
-                        logger.info("Session %s returned %d tool responses to Gemini.", self.session_id, len(tool_responses))
-                    except Exception as exc:
-                        logger.error("Session %s error returning tool responses: %s", self.session_id, exc)
-
-        # 3. Process server termination / go away event
         if getattr(message, "go_away", None) is not None:
-            logger.warning("Session %s received go_away signal from Gemini Live.", self.session_id)
-            await self.send_status(status="session_ended", message="Session ended by Gemini.")
+            await self.send_status("session_ended", "Session ended by Gemini.")
 
     async def send_audio(self, pcm_bytes: bytes) -> None:
-        """Forward a raw PCM 16-bit audio chunk to Gemini Live API."""
+        session = await self.ensure_gemini_connected()
         try:
+            await session.send_audio_chunk(pcm_bytes, mime_type="audio/pcm;rate=16000")
+        except Exception:
+            await self.reset_gemini_session()
             session = await self.ensure_gemini_connected()
             await session.send_audio_chunk(pcm_bytes, mime_type="audio/pcm;rate=16000")
-        except (GeminiConnectionError, Exception) as exc:
-            logger.warning("Session %s audio send failed (%s). Reconnecting Gemini session...", self.session_id, exc)
-            await self.reset_gemini_session(close_task=True)
-            session = await self.ensure_gemini_connected()
-            await session.send_audio_chunk(pcm_bytes, mime_type="audio/pcm;rate=16000")
-
         self.audio_chunks_received += 1
         self.total_bytes_received += len(pcm_bytes)
 
-    async def end_audio_stream(self) -> None:
-        """Signal to Gemini Live that the current speech input turn has ended."""
-        if self.gemini_session is not None:
-            try:
-                await self.gemini_session.end_audio_stream()
-            except Exception as exc:
-                logger.warning("Session %s error ending audio stream: %s", self.session_id, exc)
-
     async def send_json(self, payload: Dict[str, Any]) -> bool:
-        """Send a JSON payload to the connected WebSocket client.
-
-        Returns True if sent successfully, False otherwise.
-        """
         if not self.is_active:
             return False
         try:
             await self.websocket.send_json(payload)
             return True
-        except Exception as exc:
-            logger.warning("Failed to send message to session %s: %s", self.session_id, exc)
+        except Exception:
             self.is_active = False
             return False
 
-    async def send_status(
-        self,
-        status: str,
-        message: Optional[str] = None,
-        **extra: Any,
-    ) -> bool:
-        """Send a structured status message to the client."""
-        payload: Dict[str, Any] = {
-            "type": "status",
-            "status": status,
-            "session_id": self.session_id,
-        }
+    async def send_status(self, status: str, message: Optional[str] = None, **extra: Any) -> bool:
+        payload: Dict[str, Any] = {"type": "status", "status": status, "session_id": self.session_id}
         if message is not None:
             payload["message"] = message
         payload.update(extra)
         return await self.send_json(payload)
 
     async def close(self) -> None:
-        """Clean up background tasks, close Gemini Live session, and mark inactive."""
         self.is_active = False
-        await self.reset_gemini_session(close_task=True)
+        await self.reset_gemini_session()
 
 
 class SessionManager:
-    """Manages active WebSocket sessions."""
-
     def __init__(self) -> None:
         self._sessions: Dict[str, VoiceSession] = {}
 
-    @property
-    def active_session_count(self) -> int:
-        """Return the number of currently active sessions."""
-        return len(self._sessions)
-
     def create_session(self, websocket: WebSocket) -> VoiceSession:
-        """Create and register a new client session."""
         session_id = uuid.uuid4().hex[:12]
-        session = VoiceSession(session_id=session_id, websocket=websocket)
+        session = VoiceSession(session_id, websocket)
         self._sessions[session_id] = session
-        logger.info("Session %s created. Total active sessions: %d", session_id, len(self._sessions))
         return session
 
-    def get_session(self, session_id: str) -> Optional[VoiceSession]:
-        """Retrieve a session by its ID."""
-        return self._sessions.get(session_id)
-
-    async def remove_session(self, session_id: str) -> Optional[VoiceSession]:
-        """Remove and clean up a session."""
+    async def remove_session(self, session_id: str) -> None:
         session = self._sessions.pop(session_id, None)
         if session:
             await session.close()
-            logger.info("Session %s removed. Remaining active sessions: %d", session_id, len(self._sessions))
-        return session
 
 
-# Global session manager instance
 session_manager = SessionManager()
 
 
 def validate_message(raw_text: str) -> Dict[str, Any]:
-    """Validate and parse an incoming WebSocket text payload.
-
-    Args:
-        raw_text: Raw string from client.
-
-    Returns:
-        Parsed JSON dictionary.
-
-    Raises:
-        ValueError: If message is not valid JSON or lacks the required 'type' field.
-    """
     if not raw_text or not raw_text.strip():
         raise ValueError("Empty message received.")
-
     try:
         data = json.loads(raw_text)
-    except json.JSONDecodeError as err:
-        raise ValueError(f"Malformed JSON: {err.msg}") from err
-
-    if not isinstance(data, dict):
-        raise ValueError("Invalid payload: message must be a JSON object.")
-
-    if "type" not in data or not isinstance(data["type"], str) or not data["type"].strip():
-        raise ValueError("Invalid payload: missing or invalid 'type' field.")
-
+    except json.JSONDecodeError as exc:
+        raise ValueError("Malformed JSON.") from exc
+    if not isinstance(data, dict) or not isinstance(data.get("type"), str):
+        raise ValueError("Invalid message payload.")
     return data
 
 
 async def handle_voice_websocket(websocket: WebSocket) -> None:
-    """Handle the complete lifecycle of a client WebSocket on /ws/voice."""
     await websocket.accept()
-
     session = session_manager.create_session(websocket)
-
     try:
-        # Notify client of successful connection
-        await session.send_status(status="connected")
-
-        # Process incoming client messages
+        await session.send_status("connected")
         while session.is_active:
-            message_data = await websocket.receive()
-            msg_type = message_data.get("type")
-
-            if msg_type == "websocket.disconnect":
+            data = await websocket.receive()
+            if data.get("type") == "websocket.disconnect":
                 break
 
-            # --------------------------------------------------------------
-            # Case 1: Binary PCM Audio Chunk (Direct from Web Audio API)
-            # --------------------------------------------------------------
-            bytes_payload = message_data.get("bytes")
+            bytes_payload = data.get("bytes")
             if bytes_payload is not None:
+                if not session.authenticated:
+                    await session.send_status("error", "Please login before using voice.")
+                    continue
                 try:
                     await session.send_audio(bytes_payload)
                     session._stream_error_sent = False
                     if session.audio_chunks_received == 1:
-                        await session.send_status(status="streaming")
-                except GeminiConfigError as cfg_err:
-                    clean_err = sanitize_error_message(str(cfg_err))
-                    logger.error("Session %s Gemini config error: %s", session.session_id, clean_err)
-                    if not session._stream_error_sent:
-                        session._stream_error_sent = True
-                        await session.send_status(status="error", message=clean_err)
-                except GeminiConnectionError as conn_err:
-                    clean_err = sanitize_error_message(str(conn_err))
-                    logger.error("Session %s Gemini connection error: %s", session.session_id, clean_err)
-                    if not session._stream_error_sent:
-                        session._stream_error_sent = True
-                        await session.send_status(status="error", message=clean_err)
+                        await session.send_status("streaming")
                 except Exception as exc:
-                    clean_err = sanitize_error_message(str(exc))
-                    logger.exception("Session %s audio streaming error: %s", session.session_id, clean_err)
+                    clean = sanitize_error_message(str(exc))
                     if not session._stream_error_sent:
                         session._stream_error_sent = True
-                        await session.send_status(status="error", message=f"Audio streaming error: {clean_err}")
+                        await session.send_status("error", f"Audio streaming error: {clean}")
                 continue
 
-            # --------------------------------------------------------------
-            # Case 2: Text / JSON Message
-            # --------------------------------------------------------------
-            raw_text = message_data.get("text")
-            if raw_text is not None:
+            raw = data.get("text")
+            if raw is None:
+                continue
+            try:
+                message = validate_message(raw)
+            except ValueError as exc:
+                await session.send_status("error", str(exc))
+                continue
+
+            action = message.get("type", "").lower()
+            if action == "ping":
+                await session.send_status("pong")
+                continue
+            if action == "auth":
                 try:
-                    message = validate_message(raw_text)
-                except ValueError as val_err:
-                    logger.warning("Session %s message validation failed: %s", session.session_id, val_err)
-                    await session.send_status(status="error", message=str(val_err))
+                    await session.authenticate(message.get("token", ""), message.get("conversation_id"))
+                except Exception as exc:
+                    await session.send_status("auth_error", sanitize_error_message(str(exc)))
+                continue
+            if not session.authenticated:
+                await session.send_status("auth_required", "Please login to continue.")
+                continue
+
+            if action == "init":
+                try:
+                    client = get_gemini_client()
+                    client.config.validate()
+                    session.gemini_client = client
+                    await session.send_status("ready", config=client.config.get_public_summary())
+                except Exception as exc:
+                    await session.send_status("error", sanitize_error_message(str(exc)))
+            elif action == "start_audio":
+                session._reset_turn_buffers()
+                await session.send_status("streaming")
+            elif action == "stop_audio":
+                if session.gemini_session is not None:
+                    await session.gemini_session.end_audio_stream()
+                await session.send_status("stopped", chunks=session.audio_chunks_received, bytes=session.total_bytes_received)
+            elif action == "audio":
+                try:
+                    await session.send_audio(base64.b64decode(message.get("data", "")))
+                except Exception as exc:
+                    await session.send_status("error", sanitize_error_message(str(exc)))
+            elif action == "text":
+                prompt = message.get("text", "").strip()
+                if not prompt:
+                    await session.send_status("error", "Empty text received.")
                     continue
-
-                action = message.get("type", "").lower()
-
-                if action == "ping":
-                    await session.send_status(status="pong")
-
-                elif action == "init":
-                    try:
-                        client = get_gemini_client()
-                        client.config.validate()
-                        session.gemini_client = client
-                        summary = client.config.get_public_summary()
-                        await session.send_status(status="ready", config=summary)
-                    except GeminiConfigError as cfg_err:
-                        clean_err = sanitize_error_message(str(cfg_err))
-                        logger.error("Session %s Gemini config error: %s", session.session_id, clean_err)
-                        await session.send_status(status="error", message=clean_err)
-                    except GeminiConnectionError as conn_err:
-                        clean_err = sanitize_error_message(str(conn_err))
-                        logger.error("Session %s Gemini connection error: %s", session.session_id, clean_err)
-                        await session.send_status(status="error", message=clean_err)
-                    except Exception as exc:
-                        clean_err = sanitize_error_message(str(exc))
-                        logger.exception("Session %s unexpected init error: %s", session.session_id, clean_err)
-                        await session.send_status(status="error", message=f"Initialization failure: {clean_err}")
-
-                elif action == "start_audio":
-                    logger.info("Session %s starting audio stream.", session.session_id)
-                    session._stream_error_sent = False
-                    await session.send_status(status="streaming")
-
-                elif action == "stop_audio":
-                    logger.info(
-                        "Session %s stopped audio stream. Chunks: %d, Bytes: %d",
-                        session.session_id,
-                        session.audio_chunks_received,
-                        session.total_bytes_received,
-                    )
-                    await session.send_status(
-                        status="stopped",
-                        chunks=session.audio_chunks_received,
-                        bytes=session.total_bytes_received,
-                    )
-
-                elif action == "audio":
-                    b64_data = message.get("data", "")
-                    try:
-                        pcm_bytes = base64.b64decode(b64_data)
-                        await session.send_audio(pcm_bytes)
-                        session._stream_error_sent = False
-                        if session.audio_chunks_received == 1:
-                            await session.send_status(status="streaming")
-                    except GeminiConfigError as cfg_err:
-                        clean_err = sanitize_error_message(str(cfg_err))
-                        logger.error("Session %s Gemini config error: %s", session.session_id, clean_err)
-                        if not session._stream_error_sent:
-                            session._stream_error_sent = True
-                            await session.send_status(status="error", message=clean_err)
-                    except GeminiConnectionError as conn_err:
-                        clean_err = sanitize_error_message(str(conn_err))
-                        logger.error("Session %s Gemini connection error: %s", session.session_id, clean_err)
-                        if not session._stream_error_sent:
-                            session._stream_error_sent = True
-                            await session.send_status(status="error", message=clean_err)
-                    except Exception as exc:
-                        clean_err = sanitize_error_message(str(exc))
-                        logger.error("Session %s base64 audio error: %s", session.session_id, clean_err)
-                        if not session._stream_error_sent:
-                            session._stream_error_sent = True
-                            await session.send_status(status="error", message=f"Invalid audio chunk: {clean_err}")
-
-                elif action == "text":
-                    user_prompt = message.get("text", "").strip()
-                    if not user_prompt:
-                        await session.send_status(status="error", message="Empty text received.")
-                    else:
-                        try:
-                            gemini_session = await session.ensure_gemini_connected()
-                            try:
-                                await gemini_session.send_text(user_prompt)
-                            except (GeminiConnectionError, Exception) as send_err:
-                                logger.warning("Session %s send_text failed (%s). Reconnecting...", session.session_id, send_err)
-                                await session.reset_gemini_session()
-                                gemini_session = await session.ensure_gemini_connected()
-                                await gemini_session.send_text(user_prompt)
-                        except GeminiConfigError as cfg_err:
-                            clean_err = sanitize_error_message(str(cfg_err))
-                            logger.error("Session %s Gemini config error: %s", session.session_id, clean_err)
-                            await session.send_status(status="error", message=clean_err)
-                        except GeminiConnectionError as conn_err:
-                            clean_err = sanitize_error_message(str(conn_err))
-                            logger.error("Session %s Gemini connection error: %s", session.session_id, clean_err)
-                            await session.send_status(status="error", message=clean_err)
-                        except Exception as exc:
-                            clean_err = sanitize_error_message(str(exc))
-                            logger.exception("Session %s text prompt error: %s", session.session_id, clean_err)
-                            await session.send_status(status="error", message=f"Text processing error: {clean_err}")
-
-                elif action == "interrupt":
-                    logger.info("Session %s received client interruption signal.", session.session_id)
-                    await session.handle_interrupt()
-
-                else:
-                    await session.send_status(
-                        status="error",
-                        message=(
-                            f"Unsupported message type: '{action}'. "
-                            f"Supported: 'ping', 'init', 'start_audio', 'stop_audio', 'audio', 'text', 'interrupt'."
-                        ),
-                    )
-
+                session._reset_turn_buffers()
+                session._user_buffer = prompt
+                await session._persist_user(prompt)
+                try:
+                    gemini = await session.ensure_gemini_connected()
+                    await gemini.send_text(prompt)
+                except Exception as exc:
+                    await session.send_status("error", sanitize_error_message(str(exc)))
+            elif action == "interrupt":
+                session.turn_id += 1
+                await session.send_json({"type": "interrupted", "turn_id": session.turn_id, "session_id": session.session_id})
+            else:
+                await session.send_status("error", f"Unsupported message type: '{action}'.")
     except WebSocketDisconnect:
-        logger.info("Session %s disconnected normally.", session.session_id)
+        pass
     except Exception as exc:
-        logger.exception("Unexpected error in session %s: %s", session.session_id, exc)
-        await session.send_status(status="error", message="Internal server error.")
+        logger.exception("Unexpected WebSocket error in %s: %s", session.session_id, exc)
     finally:
         await session_manager.remove_session(session.session_id)
