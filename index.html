@@ -24,7 +24,7 @@
       <div class="top-meta">
         <div id="connectionStatus" class="connection-pill connecting" aria-live="polite">
           <span class="status-dot"></span>
-          <span id="connectionText">Starting server...</span>
+          <span id="connectionText">Connecting...</span>
         </div>
         <div class="model-pill">Gemini 2.5 Native Audio</div>
       </div>
@@ -52,7 +52,7 @@
         </div>
 
         <!-- Central Greeting / Dynamic Prompt -->
-        <h3 id="heroPrompt" class="hero-prompt">"Waking up assistant..."</h3>
+        <h3 id="heroPrompt" class="hero-prompt">"Connecting to assistant..."</h3>
 
         <!-- Status Lifecycle Tracker -->
         <div class="status-tracker" role="status">
@@ -95,10 +95,10 @@
     <footer class="bottom-control-bar">
       <div class="controls-wrapper">
         <!-- Voice Input Primary Action -->
-        <button id="recordButton" class="btn-voice" aria-label="Start voice streaming" type="button" disabled>
+        <button id="recordButton" class="btn-voice" aria-label="Start voice streaming" type="button">
           <span class="btn-voice-ripple" aria-hidden="true"></span>
           <span class="btn-voice-icon" aria-hidden="true">🎤</span>
-          <span id="recordButtonText" class="btn-voice-text">Starting...</span>
+          <span id="recordButtonText" class="btn-voice-text">Start Speaking</span>
         </button>
 
         <!-- Inline Text Input Group -->
@@ -109,9 +109,8 @@
             placeholder="Type your question or query (e.g., Pune weather, remind me)..." 
             aria-label="Ask assistant by typing" 
             autocomplete="off"
-            disabled
           />
-          <button id="textButton" class="btn-send" type="button" aria-label="Send message" disabled>
+          <button id="textButton" class="btn-send" type="button" aria-label="Send message">
             <span>Send</span>
           </button>
         </form>
@@ -120,7 +119,7 @@
       <!-- State & Hidden Compatibility Elements -->
       <div class="footer-meta">
         <div id="stateBadge" class="state-badge state-connecting">CONNECTING</div>
-        <span id="recordStatus" class="status-summary">Waking server...</span>
+        <span id="recordStatus" class="status-summary">Connecting...</span>
       </div>
     </footer>
 
@@ -142,77 +141,9 @@
   <!-- Client Audio & Pipeline Scripts -->
   <script src="/static/audio-streamer.js?v=3.0"></script>
   <script src="/static/audio-player.js?v=3.0"></script>
-  <script>
-    (() => {
-      const BACKEND = "https://real-time-voice-assistant-9bh1.onrender.com";
-      const MAX_WAKE_MS = 45000;
-      const RETRY_DELAY_MS = 1500;
-      const startedAt = Date.now();
-
-      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
-
-      function updateStartupUI(text) {
-        const connectionText = document.getElementById("connectionText");
-        const heroPrompt = document.getElementById("heroPrompt");
-        const recordStatus = document.getElementById("recordStatus");
-        if (connectionText) connectionText.textContent = text;
-        if (heroPrompt) heroPrompt.textContent = `"${text}"`;
-        if (recordStatus) recordStatus.textContent = text;
-      }
-
-      function enableControls() {
-        const recordButton = document.getElementById("recordButton");
-        const textInput = document.getElementById("textInput");
-        const textButton = document.getElementById("textButton");
-        if (recordButton) recordButton.disabled = false;
-        if (textInput) textInput.disabled = false;
-        if (textButton) textButton.disabled = false;
-      }
-
-      function loadApp() {
-        enableControls();
-        const script = document.createElement("script");
-        script.src = "/static/app.js?v=3.7";
-        script.defer = true;
-        document.body.appendChild(script);
-      }
-
-      async function wakeBackend() {
-        updateStartupUI("Waking server...");
-
-        while (Date.now() - startedAt < MAX_WAKE_MS) {
-          try {
-            const controller = new AbortController();
-            const timer = setTimeout(() => controller.abort(), 10000);
-            const response = await fetch(`${BACKEND}/health?t=${Date.now()}`, {
-              method: "GET",
-              mode: "cors",
-              cache: "no-store",
-              credentials: "omit",
-              signal: controller.signal,
-            });
-            clearTimeout(timer);
-
-            if (response.ok) {
-              updateStartupUI("Server ready — connecting voice...");
-              loadApp();
-              return;
-            }
-          } catch (_) {
-            // A Render free-tier cold start can time out once or twice; retry quietly.
-          }
-
-          updateStartupUI("Server is starting, almost ready...");
-          await sleep(RETRY_DELAY_MS);
-        }
-
-        // Do not permanently block the UI if Render is slow/unavailable.
-        updateStartupUI("Connecting to assistant...");
-        loadApp();
-      }
-
-      wakeBackend();
-    })();
-  </script>
+  <!-- Load app.js immediately so it registers DOMContentLoaded before the event fires.
+       The WebSocket request itself wakes the Render backend, avoiding the old
+       sequential /health wait that could add 30-45 seconds and leave the UI stuck. -->
+  <script src="/static/app.js?v=3.8"></script>
 </body>
 </html>
