@@ -1,5 +1,6 @@
 {
   "framework": null,
+  "outputDirectory": "public",
   "cleanUrls": true,
   "rewrites": [
     {
