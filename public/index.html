@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="voice-assistant-build" content="auth-ui-1.4">
+  <meta name="voice-assistant-build" content="public-canonical-1.5">
   <title>Real-Time AI Voice Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,7 +18,7 @@
         <div class="brand-titles"><h1>REAL-TIME</h1><h2>VOICE ASSISTANT</h2></div>
       </div>
       <div class="top-meta">
-        <div id="connectionStatus" class="connection-pill connecting" aria-live="polite"><span class="status-dot"></span><span id="connectionText">Connecting...</span></div>
+        <div id="connectionStatus" class="connection-pill connecting" aria-live="polite"><span class="status-dot"></span><span id="connectionText">Starting server...</span></div>
         <div class="model-pill">Gemini 2.5 Native Audio</div>
       </div>
     </header>
@@ -32,7 +32,7 @@
           </div>
         </div>
         <div class="waveform-container"><canvas id="waveformCanvas" width="480" height="64" aria-hidden="true"></canvas></div>
-        <h3 id="heroPrompt" class="hero-prompt">"Connecting to assistant..."</h3>
+        <h3 id="heroPrompt" class="hero-prompt">"Waking up assistant..."</h3>
         <div class="status-tracker" role="status">
           <span id="statusItemConnected" class="status-item">● Connected</span>
           <span id="statusItemListening" class="status-item">● Listening</span>
@@ -57,13 +57,13 @@
 
     <footer class="bottom-control-bar">
       <div class="controls-wrapper">
-        <button id="recordButton" class="btn-voice" aria-label="Start voice streaming" type="button"><span class="btn-voice-ripple" aria-hidden="true"></span><span class="btn-voice-icon" aria-hidden="true">🎤</span><span id="recordButtonText" class="btn-voice-text">Start Speaking</span></button>
+        <button id="recordButton" class="btn-voice" aria-label="Start voice streaming" type="button" disabled><span class="btn-voice-ripple" aria-hidden="true"></span><span class="btn-voice-icon" aria-hidden="true">🎤</span><span id="recordButtonText" class="btn-voice-text">Starting...</span></button>
         <form id="textForm" class="text-input-group" onsubmit="return false;">
-          <input type="text" id="textInput" placeholder="Type your question or query (e.g., Pune weather, remind me)..." aria-label="Ask assistant by typing" autocomplete="off">
-          <button id="textButton" class="btn-send" type="button" aria-label="Send message"><span>Send</span></button>
+          <input type="text" id="textInput" placeholder="Type your question or query (e.g., Pune weather, remind me)..." aria-label="Ask assistant by typing" autocomplete="off" disabled>
+          <button id="textButton" class="btn-send" type="button" aria-label="Send message" disabled><span>Send</span></button>
         </form>
       </div>
-      <div class="footer-meta"><div id="stateBadge" class="state-badge state-connecting">CONNECTING</div><span id="recordStatus" class="status-summary">Connecting...</span></div>
+      <div class="footer-meta"><div id="stateBadge" class="state-badge state-connecting">CONNECTING</div><span id="recordStatus" class="status-summary">Waking server...</span></div>
     </footer>
 
     <div id="toastContainer" class="toast-container" aria-live="assertive"></div>
@@ -73,7 +73,97 @@
 
   <script src="/static/audio-streamer.js?v=3.0"></script>
   <script src="/static/audio-player.js?v=3.0"></script>
-  <script src="/static/auth.js?v=1.4"></script>
-  <script src="/static/app.js?v=3.10"></script>
+  <script>
+    (() => {
+      const BACKEND = "https://real-time-voice-assistant-9bh1.onrender.com";
+      const MAX_WAKE_MS = 45000;
+      const RETRY_DELAY_MS = 1500;
+
+      const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+      function updateStartupUI(text) {
+        const connectionText = document.getElementById("connectionText");
+        const heroPrompt = document.getElementById("heroPrompt");
+        const recordStatus = document.getElementById("recordStatus");
+        if (connectionText) connectionText.textContent = text;
+        if (heroPrompt) heroPrompt.textContent = `"${text}"`;
+        if (recordStatus) recordStatus.textContent = text;
+      }
+
+      function enableControls() {
+        const recordButton = document.getElementById("recordButton");
+        const textInput = document.getElementById("textInput");
+        const textButton = document.getElementById("textButton");
+        if (recordButton) recordButton.disabled = false;
+        if (textInput) textInput.disabled = false;
+        if (textButton) textButton.disabled = false;
+      }
+
+      function loadScript(src) {
+        return new Promise((resolve, reject) => {
+          const script = document.createElement("script");
+          script.src = src;
+          script.onload = resolve;
+          script.onerror = () => reject(new Error(`Failed to load ${src}`));
+          document.body.appendChild(script);
+        });
+      }
+
+      async function wakeBackend() {
+        const startedAt = Date.now();
+        updateStartupUI("Waking server...");
+
+        while (Date.now() - startedAt < MAX_WAKE_MS) {
+          try {
+            const controller = new AbortController();
+            const timer = setTimeout(() => controller.abort(), 10000);
+            const response = await fetch(`${BACKEND}/health?t=${Date.now()}`, {
+              method: "GET",
+              mode: "cors",
+              cache: "no-store",
+              credentials: "omit",
+              signal: controller.signal,
+            });
+            clearTimeout(timer);
+
+            if (response.ok) {
+              updateStartupUI("Server ready — connecting voice...");
+              return true;
+            }
+          } catch (_) {
+            // Render free instances can take several seconds to wake. Retry quietly.
+          }
+
+          updateStartupUI("Server is starting, almost ready...");
+          await sleep(RETRY_DELAY_MS);
+        }
+
+        // Do not leave the UI permanently blocked. app.js has its own WebSocket retry logic.
+        updateStartupUI("Connecting to assistant...");
+        return false;
+      }
+
+      async function bootCanonicalFrontend() {
+        await wakeBackend();
+
+        try {
+          // auth.js must run before app.js so it can provide the authenticated APP_CONFIG WebSocket URL.
+          await loadScript("/static/auth.js?v=1.5");
+          await loadScript("/static/app.js?v=3.10");
+          enableControls();
+
+          // If Render took long enough that DOMContentLoaded already fired, initialize app.js once now.
+          if (document.readyState !== "loading") {
+            window.dispatchEvent(new Event("DOMContentLoaded"));
+          }
+        } catch (error) {
+          console.error("[Startup] Frontend boot failed:", error);
+          updateStartupUI("Failed to load assistant. Please refresh.");
+        }
+      }
+
+      bootCanonicalFrontend();
+    })();
+  </script>
 </body>
 </html>
