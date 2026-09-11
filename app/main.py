@@ -6,7 +6,6 @@ from typing import Optional
 from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, EmailStr
 from pymongo.errors import DuplicateKeyError
 
@@ -28,8 +27,7 @@ from app.services.auth import create_access_token, decode_access_token, hash_pas
 from app.services.session_manager import handle_voice_websocket
 from app.services.voice_pipeline import answer_from_text, transcribe_audio, generate_speech
 
-BASE_DIR = Path(__file__).resolve().parent
-app = FastAPI(title="AI Voice Assistant", version="2.0.0")
+app = FastAPI(title="AI Voice Assistant Backend", version="2.0.0")
 
 ALLOWED_ORIGINS = [
     "http://localhost:8000",
@@ -53,8 +51,6 @@ app.add_middleware(
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
-
-app.mount("/static", StaticFiles(directory=BASE_DIR / "static"), name="static")
 
 
 class TextRequest(BaseModel):
@@ -97,10 +93,14 @@ def current_user(authorization: Optional[str] = Header(default=None)):
 
 @app.get("/")
 def home():
-    return FileResponse(
-        BASE_DIR / "static" / "index.html",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate", "Pragma": "no-cache"},
-    )
+    return {
+        "status": "ok",
+        "service": "Real-Time Voice Assistant Backend",
+        "frontend": custom_frontend or "Vercel frontend",
+        "health": "/health",
+        "api": "/api",
+        "websocket": "/ws/voice",
+    }
 
 
 @app.get("/health")
