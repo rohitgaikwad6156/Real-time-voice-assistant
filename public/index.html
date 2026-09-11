@@ -123,10 +123,14 @@
         const existing = document.getElementById(id);
         if (existing) {
           if (existing.dataset.loaded === "true") return Promise.resolve();
-          return new Promise((resolve, reject) => {
-            existing.addEventListener("load", resolve, { once: true });
-            existing.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)), { once: true });
-          });
+          if (existing.dataset.failed === "true") {
+            existing.remove();
+          } else {
+            return new Promise((resolve, reject) => {
+              existing.addEventListener("load", resolve, { once: true });
+              existing.addEventListener("error", () => reject(new Error(`Failed to load ${src}`)), { once: true });
+            });
+          }
         }
 
         return new Promise((resolve, reject) => {
@@ -138,7 +142,11 @@
             script.dataset.loaded = "true";
             resolve();
           };
-          script.onerror = () => reject(new Error(`Failed to load ${src}`));
+          script.onerror = () => {
+            script.dataset.failed = "true";
+            script.remove();
+            reject(new Error(`Failed to load ${src}`));
+          };
           document.body.appendChild(script);
         });
       }
@@ -207,12 +215,11 @@
           await loadScriptOnce("voice-app-script", "/static/app.js?v=3.11");
           enableControls();
         } catch (error) {
-          // Allow an explicit retry after a frontend asset loading failure.
           frontendLoaded = false;
           console.error("[Startup] Frontend boot failed:", error);
           updateStartupUI("Assistant files failed to load — retrying...");
           await sleep(SLOW_RETRY_DELAY_MS);
-          initializeFrontendOnce();
+          return initializeFrontendOnce();
         }
       }
 
