@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="voice-assistant-build" content="public-canonical-1.6">
+  <meta name="voice-assistant-build" content="public-canonical-1.7">
   <title>Real-Time AI Voice Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -50,7 +50,7 @@
           <button id="clearConversationBtn" class="btn-text-action" aria-label="Clear conversation history">Clear</button>
         </div>
         <div id="conversationList" class="conversation-container" role="log" aria-live="polite">
-          <div class="empty-hint" id="emptyHint"><div class="empty-icon">🎙️</div><p class="empty-title">Ready to assist you</p><p class="empty-desc">The assistant will become available as soon as the backend is ready.</p></div>
+          <div class="empty-hint" id="emptyHint"><div class="empty-icon">🎙️</div><p class="empty-title">Ready to assist you</p><p class="empty-desc">Sign in first. The voice assistant starts only after your account is verified.</p></div>
         </div>
       </section>
     </main>
@@ -75,7 +75,6 @@
   <script src="/static/audio-player.js?v=3.0"></script>
   <script>
     (() => {
-      // Global guard: even if this boot script is evaluated twice, startup only runs once.
       if (window.__VOICE_ASSISTANT_BOOT_STARTED__) return;
       window.__VOICE_ASSISTANT_BOOT_STARTED__ = true;
 
@@ -86,7 +85,7 @@
       const LONG_WAIT_MS = 45000;
       const VERY_LONG_WAIT_MS = 90000;
 
-      let frontendLoaded = false;
+      let voiceAppLoaded = false;
 
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -165,7 +164,6 @@
           });
 
           if (!response.ok) return false;
-
           const payload = await response.json().catch(() => null);
           return !payload || payload.status === "ok";
         } catch (_) {
@@ -184,7 +182,7 @@
           attempt += 1;
 
           if (await checkBackendHealth()) {
-            updateStartupUI("Server ready — starting assistant...");
+            updateStartupUI("Server ready — checking account...");
             return;
           }
 
@@ -205,27 +203,44 @@
         }
       }
 
-      async function initializeFrontendOnce() {
-        if (frontendLoaded) return;
-        frontendLoaded = true;
+      async function initializeAuthenticatedFrontendOnce() {
+        if (voiceAppLoaded) return;
 
         try {
-          // auth.js runs first so app.js receives the authenticated APP_CONFIG WebSocket URL.
-          await loadScriptOnce("voice-auth-script", "/static/auth.js?v=1.5");
+          // Authentication is the hard gate. app.js is not loaded until auth.js has
+          // validated the JWT, loaded conversations and selected an active conversation.
+          await loadScriptOnce("voice-auth-script", "/static/auth.js?v=1.6");
+
+          if (!window.VOICE_AUTH_READY) {
+            throw new Error("Authentication readiness signal was not created.");
+          }
+
+          const authState = await window.VOICE_AUTH_READY;
+
+          if (!authState?.authenticated) {
+            updateStartupUI("Sign in to start assistant");
+            return;
+          }
+
+          if (!window.APP_CONFIG?.WS_URL || !window.APP_CONFIG?.API_URL) {
+            throw new Error("Authenticated WebSocket configuration is missing.");
+          }
+
+          voiceAppLoaded = true;
           await loadScriptOnce("voice-app-script", "/static/app.js?v=3.11");
           enableControls();
         } catch (error) {
-          frontendLoaded = false;
-          console.error("[Startup] Frontend boot failed:", error);
-          updateStartupUI("Assistant files failed to load — retrying...");
+          voiceAppLoaded = false;
+          console.error("[Startup] Authenticated frontend boot failed:", error);
+          updateStartupUI("Assistant startup delayed — retrying...");
           await sleep(SLOW_RETRY_DELAY_MS);
-          return initializeFrontendOnce();
+          return initializeAuthenticatedFrontendOnce();
         }
       }
 
       async function bootCanonicalFrontend() {
         await waitForBackend();
-        await initializeFrontendOnce();
+        await initializeAuthenticatedFrontendOnce();
       }
 
       bootCanonicalFrontend().catch((error) => {
