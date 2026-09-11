@@ -209,6 +209,20 @@ def get_messages(user_id: str, conversation_id: str, limit: int = 300) -> List[D
     return [_serialize(doc) or {} for doc in cursor]
 
 
+def delete_conversation_messages(user_id: str, conversation_id: str) -> Optional[int]:
+    """Delete messages only when the conversation belongs to this authenticated user."""
+    db = get_database()
+    conversation = get_conversation(user_id, conversation_id)
+    if not conversation:
+        return None
+
+    result = db.messages.delete_many({
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+    })
+    return int(result.deleted_count)
+
+
 # ----------------------------- Reminders ------------------------------
 
 def create_user_reminder(user_id: str, title: str, remind_at: str) -> Dict[str, Any]:
