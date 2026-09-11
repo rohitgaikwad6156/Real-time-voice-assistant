@@ -207,7 +207,7 @@
         if (voiceAppLoaded) return;
 
         try {
-          await loadScriptOnce("voice-auth-script", "/static/auth.js?v=1.8");
+          await loadScriptOnce("voice-auth-script", "/static/auth.js?v=1.9");
 
           if (!window.VOICE_AUTH_READY) {
             throw new Error("Authentication readiness signal was not created.");
