@@ -17,6 +17,7 @@ from app.database.mongodb import (
     create_user,
     create_user_reminder,
     database_status,
+    delete_conversation_messages,
     get_messages,
     get_user_by_email,
     get_user_by_id,
@@ -159,6 +160,18 @@ def new_conversation(request: ConversationRequest, user=Depends(current_user)):
 @app.get("/api/conversations/{conversation_id}/messages")
 def conversation_messages(conversation_id: str, user=Depends(current_user)):
     return {"messages": get_messages(user["id"], conversation_id)}
+
+
+@app.delete("/api/conversations/{conversation_id}/messages")
+def clear_conversation_messages(conversation_id: str, user=Depends(current_user)):
+    deleted_count = delete_conversation_messages(user["id"], conversation_id)
+    if deleted_count is None:
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+    return {
+        "status": "ok",
+        "conversation_id": conversation_id,
+        "deleted_count": deleted_count,
+    }
 
 
 @app.get("/api/reminders")
