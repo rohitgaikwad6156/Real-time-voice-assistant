@@ -6,6 +6,7 @@
   const TOKEN_KEY = "voiceAssistantToken";
   const USER_KEY = "voiceAssistantUser";
   const CONVERSATION_KEY = "voiceAssistantConversationId";
+  const SELECT_LATEST_ON_BOOT_KEY = "voiceAssistantSelectLatestOnBoot";
   const AUTH_RETRY_DELAY_MS = 2500;
 
   let resolveAuthReady;
@@ -39,6 +40,7 @@
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem(CONVERSATION_KEY);
+    localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
     delete window.APP_CONFIG;
   }
 
@@ -109,6 +111,16 @@
     }
 
     return data;
+  }
+
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>'"]/g, (c) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      "'": "&#39;",
+      '"': "&quot;",
+    }[c]));
   }
 
   function injectStyles() {
@@ -196,10 +208,12 @@
 
         localStorage.setItem(TOKEN_KEY, result.access_token);
         localStorage.setItem(USER_KEY, JSON.stringify(result.user));
-        localStorage.removeItem(CONVERSATION_KEY);
 
-        // Reload into the normal validation path. The voice app still will not start
-        // until /api/auth/me and conversation selection succeed.
+        // A fresh login/register must choose from the server's current conversation list.
+        // It must never create a conversation here.
+        localStorage.removeItem(CONVERSATION_KEY);
+        localStorage.setItem(SELECT_LATEST_ON_BOOT_KEY, "1");
+
         location.reload();
       } catch (err) {
         error.textContent = err.message;
@@ -226,21 +240,15 @@
     }
   }
 
-  function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>'"]/g, (c) => ({
-      "&": "&amp;",
-      "<": "&lt;",
-      ">": "&gt;",
-      "'": "&#39;",
-      '"': "&quot;",
-    }[c]));
-  }
-
   async function renderHistoryMessages(conversationId) {
     try {
       const data = await api(`/api/conversations/${conversationId}/messages`);
       const list = document.getElementById("conversationList");
-      if (!list || !data.messages?.length) return;
+      if (!list) return;
+
+      if (!data.messages?.length) {
+        return;
+      }
 
       list.innerHTML = "";
       let turns = 0;
@@ -287,17 +295,20 @@
       item.title = conversation.title || "New conversation";
       item.onclick = () => {
         localStorage.setItem(CONVERSATION_KEY, conversation.id);
+        localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
         location.reload();
       };
       list.appendChild(item);
     });
 
+    // Explicit user action: this is one of only two allowed creation paths.
     sidebar.querySelector(".history-new").onclick = async () => {
       const created = await api("/api/conversations", {
         method: "POST",
         body: JSON.stringify({ title: "New conversation" }),
       });
       localStorage.setItem(CONVERSATION_KEY, created.conversation.id);
+      localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
       location.reload();
     };
 
@@ -306,6 +317,33 @@
       clearStoredSession();
       location.reload();
     };
+  }
+
+  async function selectConversationForSession(conversations) {
+    // Backend returns conversations newest-first by updated_at.
+    if (conversations.length > 0) {
+      const forceLatest = localStorage.getItem(SELECT_LATEST_ON_BOOT_KEY) === "1";
+      const storedId = localStorage.getItem(CONVERSATION_KEY);
+      const storedExists = storedId && conversations.some((conversation) => conversation.id === storedId);
+
+      const selected = forceLatest || !storedExists
+        ? conversations[0]
+        : conversations.find((conversation) => conversation.id === storedId);
+
+      localStorage.setItem(CONVERSATION_KEY, selected.id);
+      localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
+      return { conversation: selected, conversations };
+    }
+
+    // Zero server conversations: this is the only automatic creation path.
+    const created = await api("/api/conversations", {
+      method: "POST",
+      body: JSON.stringify({ title: "New conversation" }),
+    });
+
+    localStorage.setItem(CONVERSATION_KEY, created.conversation.id);
+    localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
+    return { conversation: created.conversation, conversations: [created.conversation] };
   }
 
   async function resolveAuthenticatedSession() {
@@ -323,30 +361,16 @@
 
     while (true) {
       try {
-        // JWT is not trusted until the backend validates it here.
         const me = await api("/api/auth/me");
         localStorage.setItem(USER_KEY, JSON.stringify(me.user));
 
         updateStartupStatus("Loading conversations...");
         const data = await api("/api/conversations");
-        let conversations = data.conversations || [];
-        let active = localStorage.getItem(CONVERSATION_KEY);
+        const serverConversations = Array.isArray(data.conversations) ? data.conversations : [];
+        const selection = await selectConversationForSession(serverConversations);
+        const active = selection.conversation.id;
+        const conversations = selection.conversations;
 
-        if (!active || !conversations.some((conversation) => conversation.id === active)) {
-          if (conversations.length > 0) {
-            active = conversations[0].id;
-          } else {
-            const created = await api("/api/conversations", {
-              method: "POST",
-              body: JSON.stringify({ title: "New conversation" }),
-            });
-            active = created.conversation.id;
-            conversations = [created.conversation];
-          }
-          localStorage.setItem(CONVERSATION_KEY, active);
-        }
-
-        // Only a backend-validated token + user-owned conversation may create WS config.
         configureAuthenticatedWebSocket(token, active);
         renderAuthenticatedSidebar(me.user, conversations, active);
         renderHistoryMessages(active);
@@ -364,7 +388,6 @@
           return;
         }
 
-        // Temporary network/database failures must not erase a valid stored JWT.
         console.warn("Authentication initialization delayed:", err);
         updateStartupStatus(navigator.onLine
           ? "Restoring your session — still retrying..."
