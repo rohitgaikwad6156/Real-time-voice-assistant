@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="voice-assistant-build" content="public-canonical-1.8">
+  <meta name="voice-assistant-build" content="public-canonical-1.9">
   <title>Real-Time AI Voice Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -207,7 +207,7 @@
         if (voiceAppLoaded) return;
 
         try {
-          await loadScriptOnce("voice-auth-script", "/static/auth.js?v=1.7");
+          await loadScriptOnce("voice-auth-script", "/static/auth.js?v=1.8");
 
           if (!window.VOICE_AUTH_READY) {
             throw new Error("Authentication readiness signal was not created.");
@@ -225,7 +225,7 @@
           }
 
           voiceAppLoaded = true;
-          await loadScriptOnce("voice-app-script", "/static/app.js?v=3.11");
+          await loadScriptOnce("voice-app-script", "/static/app.js?v=3.12");
           enableControls();
         } catch (error) {
           voiceAppLoaded = false;
