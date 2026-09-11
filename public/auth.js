@@ -11,6 +11,9 @@
 
   let resolveAuthReady;
   let authResultPublished = false;
+  let conversationSwitchSequence = 0;
+  let activeConversationId = null;
+  let knownConversations = [];
 
   window.VOICE_AUTH_STATE = {
     ready: false,
@@ -41,6 +44,8 @@
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem(CONVERSATION_KEY);
     localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
+    activeConversationId = null;
+    knownConversations = [];
     delete window.APP_CONFIG;
   }
 
@@ -137,7 +142,7 @@
       .auth-submit{width:100%;margin-top:10px;padding:13px;border:0;border-radius:11px;background:#2563eb;color:white;font-weight:800;cursor:pointer}.auth-submit:disabled{opacity:.65;cursor:wait}.auth-error{min-height:18px;color:#fb7185;font-size:13px;margin-top:10px}
       .history-sidebar{position:fixed;left:0;top:0;bottom:0;width:245px;background:#0a1220;border-right:1px solid #1e293b;z-index:40;padding:18px 14px;box-sizing:border-box;overflow:auto;font-family:'Plus Jakarta Sans',sans-serif}
       .history-brand{color:white;font-weight:800;font-size:14px;margin-bottom:16px}.history-new,.history-reminders{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #334155;background:#111c31;color:#e2e8f0;text-align:left;cursor:pointer;margin-bottom:8px;font-weight:700}
-      .history-label{color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:18px 6px 8px}.history-item{padding:10px;border-radius:9px;color:#cbd5e1;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.history-item:hover,.history-item.active{background:#17233a;color:white}
+      .history-label{color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:18px 6px 8px}.history-item{padding:10px;border-radius:9px;color:#cbd5e1;font-size:13px;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.history-item:hover,.history-item.active{background:#17233a;color:white}.history-item.switching{opacity:.7;cursor:wait}
       .history-user{margin-top:18px;padding-top:14px;border-top:1px solid #1e293b;color:#cbd5e1;font-size:12px}.history-user strong{display:block;color:white;margin-bottom:3px}.history-logout{margin-top:9px;border:0;background:transparent;color:#f87171;padding:0;cursor:pointer}
       body.has-history-sidebar .app-layout{margin-left:245px;width:calc(100% - 245px)}
       .reminder-modal{position:fixed;inset:0;z-index:9998;background:rgba(2,6,23,.72);display:flex;align-items:center;justify-content:center;padding:20px}.reminder-card{width:min(520px,100%);max-height:70vh;overflow:auto;background:#0f172a;border:1px solid #334155;border-radius:18px;padding:22px;color:white}.reminder-row{padding:12px 0;border-bottom:1px solid #1e293b}.reminder-row small{display:block;color:#94a3b8;margin-top:4px}.reminder-close{float:right;border:0;background:#1e293b;color:white;border-radius:8px;padding:7px 10px;cursor:pointer}
@@ -208,12 +213,8 @@
 
         localStorage.setItem(TOKEN_KEY, result.access_token);
         localStorage.setItem(USER_KEY, JSON.stringify(result.user));
-
-        // A fresh login/register must choose from the server's current conversation list.
-        // It must never create a conversation here.
         localStorage.removeItem(CONVERSATION_KEY);
         localStorage.setItem(SELECT_LATEST_ON_BOOT_KEY, "1");
-
         location.reload();
       } catch (err) {
         error.textContent = err.message;
@@ -240,20 +241,33 @@
     }
   }
 
-  async function renderHistoryMessages(conversationId) {
-    try {
-      const data = await api(`/api/conversations/${conversationId}/messages`);
-      const list = document.getElementById("conversationList");
-      if (!list) return;
+  function renderEmptyConversation(list) {
+    list.innerHTML = `
+      <div class="empty-hint" id="emptyHint">
+        <div class="empty-icon">🎙️</div>
+        <p class="empty-title">Start this conversation</p>
+        <p class="empty-desc">Ask by voice or text. Messages stay inside this conversation.</p>
+      </div>`;
+  }
 
-      if (!data.messages?.length) {
-        return;
-      }
+  async function renderHistoryMessages(conversationId, expectedSwitchSequence = null) {
+    const data = await api(`/api/conversations/${conversationId}/messages`);
 
-      list.innerHTML = "";
-      let turns = 0;
+    if (expectedSwitchSequence !== null && expectedSwitchSequence !== conversationSwitchSequence) {
+      return { stale: true, turns: 0 };
+    }
 
-      for (const msg of data.messages) {
+    const list = document.getElementById("conversationList");
+    if (!list) return { stale: false, turns: 0 };
+
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    list.innerHTML = "";
+    let turns = 0;
+
+    if (messages.length === 0) {
+      renderEmptyConversation(list);
+    } else {
+      for (const msg of messages) {
         const div = document.createElement("div");
         div.className = `turn ${msg.role === "user" ? "user-turn" : "assistant-turn"}`;
         div.innerHTML = `<div class="turn-header-row"><span class="turn-role-tag">${msg.role === "user" ? "USER" : "ASSISTANT"}</span></div><div class="turn-bubble"></div>`;
@@ -261,17 +275,110 @@
         list.appendChild(div);
         if (msg.role === "user") turns += 1;
       }
-
-      const counter = document.getElementById("turnCounter");
-      if (counter) counter.textContent = `${turns} ${turns === 1 ? "turn" : "turns"}`;
       list.scrollTop = list.scrollHeight;
+    }
+
+    const counter = document.getElementById("turnCounter");
+    if (counter) counter.textContent = `${turns} ${turns === 1 ? "turn" : "turns"}`;
+    if (typeof window.VOICE_APP_SYNC_TURN_COUNT === "function") {
+      window.VOICE_APP_SYNC_TURN_COUNT(turns);
+    }
+
+    return { stale: false, turns };
+  }
+
+  function highlightActiveConversation(conversationId, switching = false) {
+    document.querySelectorAll(".history-item[data-conversation-id]").forEach((item) => {
+      const isActive = item.dataset.conversationId === conversationId;
+      item.classList.toggle("active", isActive);
+      item.classList.toggle("switching", switching && isActive);
+    });
+  }
+
+  async function switchConversation(conversationId) {
+    if (!conversationId || conversationId === activeConversationId) {
+      highlightActiveConversation(activeConversationId, false);
+      return;
+    }
+
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (!token) return;
+
+    const switchSequence = ++conversationSwitchSequence;
+    const previousConversationId = activeConversationId;
+    const previousConfig = window.APP_CONFIG ? { ...window.APP_CONFIG } : null;
+
+    // Step 1: persist the requested active conversation immediately.
+    localStorage.setItem(CONVERSATION_KEY, conversationId);
+    localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
+    activeConversationId = conversationId;
+    if (window.VOICE_AUTH_STATE?.ready) {
+      window.VOICE_AUTH_STATE.conversationId = conversationId;
+    }
+    highlightActiveConversation(conversationId, true);
+
+    // Stop old-conversation traffic before loading the new history. This prevents
+    // late packets from the old socket from being appended to the new thread.
+    if (typeof window.VOICE_APP_BEGIN_CONVERSATION_SWITCH === "function") {
+      window.VOICE_APP_BEGIN_CONVERSATION_SWITCH();
+    }
+
+    updateStartupStatus("Loading conversation...");
+
+    try {
+      // Steps 2-3: load and render only this conversation's stored messages.
+      const history = await renderHistoryMessages(conversationId, switchSequence);
+      if (history.stale || switchSequence !== conversationSwitchSequence) return;
+
+      // Step 4: only after history is ready, publish the new authenticated WS URL
+      // and let app.js establish one fresh socket for this conversation.
+      configureAuthenticatedWebSocket(token, conversationId);
+      highlightActiveConversation(conversationId, false);
+
+      if (typeof window.VOICE_APP_COMPLETE_CONVERSATION_SWITCH === "function") {
+        window.VOICE_APP_COMPLETE_CONVERSATION_SWITCH({ turnCount: history.turns });
+      }
+
+      updateStartupStatus("Connecting conversation...");
     } catch (err) {
-      console.warn("Could not load history", err);
+      if (switchSequence !== conversationSwitchSequence) return;
+
+      console.warn("Could not switch conversation", err);
+
+      // Roll back to the previous conversation without mixing UI/socket state.
+      activeConversationId = previousConversationId;
+      if (previousConversationId) {
+        localStorage.setItem(CONVERSATION_KEY, previousConversationId);
+        if (window.VOICE_AUTH_STATE?.ready) {
+          window.VOICE_AUTH_STATE.conversationId = previousConversationId;
+        }
+      }
+
+      if (previousConfig) window.APP_CONFIG = previousConfig;
+      highlightActiveConversation(previousConversationId, false);
+
+      let rollbackTurns = 0;
+      if (previousConversationId) {
+        try {
+          const rollback = await renderHistoryMessages(previousConversationId, switchSequence);
+          rollbackTurns = rollback.turns;
+        } catch (rollbackError) {
+          console.warn("Could not restore previous conversation history", rollbackError);
+        }
+      }
+
+      if (typeof window.VOICE_APP_CANCEL_CONVERSATION_SWITCH === "function") {
+        window.VOICE_APP_CANCEL_CONVERSATION_SWITCH({ turnCount: rollbackTurns });
+      }
+
+      updateStartupStatus("Could not switch conversation");
     }
   }
 
   function renderAuthenticatedSidebar(user, conversations, active) {
     document.body.classList.add("has-history-sidebar");
+    knownConversations = conversations;
+    activeConversationId = active;
 
     const existing = document.querySelector(".history-sidebar");
     if (existing) existing.remove();
@@ -291,17 +398,13 @@
     conversations.forEach((conversation) => {
       const item = document.createElement("div");
       item.className = `history-item ${conversation.id === active ? "active" : ""}`;
+      item.dataset.conversationId = conversation.id;
       item.textContent = conversation.title || "New conversation";
       item.title = conversation.title || "New conversation";
-      item.onclick = () => {
-        localStorage.setItem(CONVERSATION_KEY, conversation.id);
-        localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
-        location.reload();
-      };
+      item.onclick = () => switchConversation(conversation.id);
       list.appendChild(item);
     });
 
-    // Explicit user action: this is one of only two allowed creation paths.
     sidebar.querySelector(".history-new").onclick = async () => {
       const created = await api("/api/conversations", {
         method: "POST",
@@ -371,9 +474,11 @@
         const active = selection.conversation.id;
         const conversations = selection.conversations;
 
+        activeConversationId = active;
+        knownConversations = conversations;
         configureAuthenticatedWebSocket(token, active);
         renderAuthenticatedSidebar(me.user, conversations, active);
-        renderHistoryMessages(active);
+        await renderHistoryMessages(active);
 
         updateStartupStatus("Session ready — starting assistant...");
         publishAuthResult(true, me.user, active);
