@@ -1,6 +1,6 @@
 /**
  * Real-Time Voice Assistant Client Application (Step 12: Modern UI/UX)
- * 
+ *
  * Features:
  * - Animated Voice Orb reflecting 7-state lifecycle
  * - Real-Time Canvas Waveform visualizer modulated by vocal energy & audio playback
@@ -12,33 +12,60 @@
  * - Responsive & accessible controls for desktop and mobile
  */
 
-// DOM Elements
-const recordButton = document.getElementById("recordButton");
-const recordButtonText = document.getElementById("recordButtonText");
-const textInput = document.getElementById("textInput");
-const textButton = document.getElementById("textButton");
-const textForm = document.getElementById("textForm");
-const voiceOrb = document.getElementById("voiceOrb");
-const waveformCanvas = document.getElementById("waveformCanvas");
-const heroPrompt = document.getElementById("heroPrompt");
-const connectionStatus = document.getElementById("connectionStatus");
-const connectionText = document.getElementById("connectionText");
-const stateBadge = document.getElementById("stateBadge");
-const recordStatus = document.getElementById("recordStatus");
-const toolActivityBanner = document.getElementById("toolActivityBanner");
-const toolIcon = document.getElementById("toolIcon");
-const toolActivityText = document.getElementById("toolActivityText");
-const conversationList = document.getElementById("conversationList");
-const emptyHint = document.getElementById("emptyHint");
-const turnCounter = document.getElementById("turnCounter");
-const clearConversationBtn = document.getElementById("clearConversationBtn");
-const toastContainer = document.getElementById("toastContainer");
+// DOM elements are bound during application initialization so app.js is safe whether
+// it loads before or after DOMContentLoaded.
+let recordButton = null;
+let recordButtonText = null;
+let textInput = null;
+let textButton = null;
+let textForm = null;
+let voiceOrb = null;
+let waveformCanvas = null;
+let heroPrompt = null;
+let connectionStatus = null;
+let connectionText = null;
+let stateBadge = null;
+let recordStatus = null;
+let toolActivityBanner = null;
+let toolIcon = null;
+let toolActivityText = null;
+let conversationList = null;
+let emptyHint = null;
+let turnCounter = null;
+let clearConversationBtn = null;
+let toastContainer = null;
+let statusItemConnected = null;
+let statusItemListening = null;
+let statusItemThinking = null;
+let statusItemSpeaking = null;
 
-// Status Tracker Items
-const statusItemConnected = document.getElementById("statusItemConnected");
-const statusItemListening = document.getElementById("statusItemListening");
-const statusItemThinking = document.getElementById("statusItemThinking");
-const statusItemSpeaking = document.getElementById("statusItemSpeaking");
+function bindDomElements() {
+  recordButton = document.getElementById("recordButton");
+  recordButtonText = document.getElementById("recordButtonText");
+  textInput = document.getElementById("textInput");
+  textButton = document.getElementById("textButton");
+  textForm = document.getElementById("textForm");
+  voiceOrb = document.getElementById("voiceOrb");
+  waveformCanvas = document.getElementById("waveformCanvas");
+  heroPrompt = document.getElementById("heroPrompt");
+  connectionStatus = document.getElementById("connectionStatus");
+  connectionText = document.getElementById("connectionText");
+  stateBadge = document.getElementById("stateBadge");
+  recordStatus = document.getElementById("recordStatus");
+  toolActivityBanner = document.getElementById("toolActivityBanner");
+  toolIcon = document.getElementById("toolIcon");
+  toolActivityText = document.getElementById("toolActivityText");
+  conversationList = document.getElementById("conversationList");
+  emptyHint = document.getElementById("emptyHint");
+  turnCounter = document.getElementById("turnCounter");
+  clearConversationBtn = document.getElementById("clearConversationBtn");
+  toastContainer = document.getElementById("toastContainer");
+
+  statusItemConnected = document.getElementById("statusItemConnected");
+  statusItemListening = document.getElementById("statusItemListening");
+  statusItemThinking = document.getElementById("statusItemThinking");
+  statusItemSpeaking = document.getElementById("statusItemSpeaking");
+}
 
 // Centralized Backend & WebSocket Configuration (Vercel + Render Split Architecture)
 const RENDER_BACKEND_ORIGIN = "https://real-time-voice-assistant-9bh1.onrender.com";
@@ -77,9 +104,9 @@ function getAppConfig() {
   };
 }
 
-const CONFIG = getAppConfig();
-
 // State & Lifecycle Variables
+let appInitialized = false;
+let eventListenersBound = false;
 let websocket = null;
 let reconnectTimer = null;
 let audioStreamer = null;
@@ -107,18 +134,15 @@ let isUserTurnActive = false;
 function setAssistantState(state, customText = null) {
   currentAssistantState = state;
 
-  // 1. Update Voice Orb class
   if (voiceOrb) {
     voiceOrb.className = `voice-orb state-${state}`;
   }
 
-  // 2. Update State Badge
   if (stateBadge) {
     stateBadge.className = `state-badge state-${state}`;
     stateBadge.textContent = state.toUpperCase();
   }
 
-  // 3. Update Record Button Style & Text
   if (recordButton) {
     if (state === "listening" || isStreaming) {
       recordButton.classList.add("streaming");
@@ -129,12 +153,10 @@ function setAssistantState(state, customText = null) {
     }
   }
 
-  // 4. Update Status Tracker Pills
   if (statusItemListening) statusItemListening.classList.toggle("active", state === "listening");
   if (statusItemThinking) statusItemThinking.classList.toggle("active", state === "thinking");
   if (statusItemSpeaking) statusItemSpeaking.classList.toggle("active", state === "speaking");
 
-  // 5. Update Hero Prompt
   const promptMap = {
     idle: '"How can I help you today?"',
     connecting: '"Connecting to assistant..."',
@@ -175,8 +197,10 @@ let animationFrameId = null;
 let wavePhase = 0;
 
 function initWaveform() {
-  if (!waveformCanvas) return;
+  if (!waveformCanvas || animationFrameId !== null) return;
+
   canvasCtx = waveformCanvas.getContext("2d");
+  if (!canvasCtx) return;
 
   function drawWave() {
     animationFrameId = requestAnimationFrame(drawWave);
@@ -186,8 +210,7 @@ function initWaveform() {
 
     canvasCtx.clearRect(0, 0, width, height);
 
-    // Determine target amplitude based on state and microphone energy
-    let targetAmp = 2; // subtle idle breathing
+    let targetAmp = 2;
     let waveColor = "rgba(56, 189, 248, 0.4)";
 
     if (currentAssistantState === "listening") {
@@ -206,7 +229,6 @@ function initWaveform() {
 
     wavePhase += 0.06;
 
-    // Draw multi-layer harmonic sine wave
     for (let layer = 0; layer < 2; layer++) {
       canvasCtx.beginPath();
       canvasCtx.lineWidth = layer === 0 ? 2.5 : 1.5;
@@ -217,7 +239,7 @@ function initWaveform() {
       const amp = layer === 0 ? targetAmp : targetAmp * 0.6;
 
       for (let x = 0; x < width; x++) {
-        const envelope = Math.sin((x / width) * Math.PI); // Pinches ends to zero
+        const envelope = Math.sin((x / width) * Math.PI);
         const y = centerY + Math.sin(x * freqMultiplier + wavePhase * speedMultiplier) * amp * envelope;
         if (x === 0) {
           canvasCtx.moveTo(x, y);
@@ -268,14 +290,12 @@ function showToast(message, isError = true) {
   if (!toastContainer) return;
 
   const now = Date.now();
-  // Debounce identical toast messages within 2.5 seconds
   if (message === lastToastMessage && now - lastToastTime < 2500) {
     return;
   }
   lastToastMessage = message;
   lastToastTime = now;
 
-  // Limit maximum simultaneous toasts on screen to 3
   while (toastContainer.children.length >= 3) {
     toastContainer.removeChild(toastContainer.firstElementChild);
   }
@@ -305,6 +325,64 @@ function base64ToArrayBuffer(base64) {
     bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes.buffer;
+}
+
+function getOrCreateAudioPlayer() {
+  if (audioPlayer) return audioPlayer;
+
+  if (typeof window.AudioPlayer !== "function") {
+    console.warn("[AudioPlayer] AudioPlayer dependency is not available yet.");
+    return null;
+  }
+
+  audioPlayer = new window.AudioPlayer({
+    sampleRate: 24000,
+    onPlaybackStarted: () => setAssistantState("speaking"),
+    onPlaybackEnded: () => {
+      if (currentAssistantState === "speaking") {
+        setAssistantState(isStreaming ? "listening" : "idle");
+      }
+    },
+  });
+
+  return audioPlayer;
+}
+
+function getOrCreateAudioStreamer() {
+  if (audioStreamer) return audioStreamer;
+
+  if (typeof window.AudioStreamer !== "function") {
+    console.warn("[AudioStreamer] AudioStreamer dependency is not available yet.");
+    return null;
+  }
+
+  audioStreamer = new window.AudioStreamer({
+    targetSampleRate: 16000,
+    bufferSize: 2048,
+    onVoiceActivity: (rms) => {
+      currentVoiceEnergy = rms;
+    },
+  });
+
+  return audioStreamer;
+}
+
+function initializeAudioSubsystem() {
+  getOrCreateAudioPlayer();
+  getOrCreateAudioStreamer();
+}
+
+async function ensureAudioPlayerReady() {
+  const player = getOrCreateAudioPlayer();
+  if (!player) {
+    throw new Error("Audio player is still loading. Please try again.");
+  }
+
+  try {
+    await player._ensureContext();
+  } catch (err) {
+    console.warn("[AudioPlayer] Context resume on gesture failed:", err);
+  }
 }
 
 // ==============================================================================
@@ -378,7 +456,6 @@ function updateUserTranscriptUI() {
 function appendOrUpdateUserTranscript(incomingText) {
   if (!incomingText) return;
 
-  // Initialize a new turn if one wasn't active
   if (!isUserTurnActive) {
     isUserTurnActive = true;
     currentUserTranscript = "";
@@ -392,11 +469,9 @@ function appendOrUpdateUserTranscript(incomingText) {
   const curTrim = cur.trim();
   const incTrim = inc.trim();
 
-  // Check if incomingText is a cumulative replacement (starts with or extends current transcript)
   if (curTrim.length > 0 && (inc.startsWith(cur) || (incTrim.length > curTrim.length && incTrim.startsWith(curTrim)))) {
     currentUserTranscript = inc;
   } else {
-    // Delta / incremental appending (Gemini Live speech recognition chunks)
     currentUserTranscript += inc;
   }
 
@@ -425,32 +500,35 @@ function finalizeUserTurn() {
   isUserTurnActive = false;
 }
 
-if (clearConversationBtn) {
-  clearConversationBtn.onclick = () => {
-    if (conversationList) {
-      conversationList.innerHTML = `
-        <div class="empty-hint" id="emptyHint">
-          <div class="empty-icon">🎙️</div>
-          <p class="empty-title">Ready to assist you</p>
-          <p class="empty-desc">Click <strong>Start Speaking</strong> below or ask by text to begin your real-time conversation.</p>
-        </div>
-      `;
-    }
-    currentUserBubble = null;
-    currentAssistantBubble = null;
-    currentUserTranscript = "";
-    finalUserTranscript = "";
-    isUserTurnActive = false;
-    if (textInput) {
-      textInput.value = "";
-    }
-    const compatTranscript = document.getElementById("transcript");
-    if (compatTranscript) {
-      compatTranscript.textContent = "";
-    }
-    totalTurns = 0;
-    updateTurnCounter();
-  };
+function handleClearConversation() {
+  if (conversationList) {
+    conversationList.innerHTML = `
+      <div class="empty-hint" id="emptyHint">
+        <div class="empty-icon">🎙️</div>
+        <p class="empty-title">Ready to assist you</p>
+        <p class="empty-desc">Click <strong>Start Speaking</strong> below or ask by text to begin your real-time conversation.</p>
+      </div>
+    `;
+    emptyHint = document.getElementById("emptyHint");
+  }
+
+  currentUserBubble = null;
+  currentAssistantBubble = null;
+  currentUserTranscript = "";
+  finalUserTranscript = "";
+  isUserTurnActive = false;
+
+  if (textInput) {
+    textInput.value = "";
+  }
+
+  const compatTranscript = document.getElementById("transcript");
+  if (compatTranscript) {
+    compatTranscript.textContent = "";
+  }
+
+  totalTurns = 0;
+  updateTurnCounter();
 }
 
 // ==============================================================================
@@ -466,12 +544,10 @@ function handleBargeIn(source = "local") {
 
   console.log(`[Barge-In] Triggered (${source}). Cancelling audio output.`);
 
-  // 1. Immediately halt audio playback
   if (audioPlayer) {
     audioPlayer.stop();
   }
 
-  // 2. Mark active assistant bubble as interrupted
   if (currentAssistantBubble) {
     if (!currentAssistantBubble.querySelector(".interrupted-tag")) {
       const tag = document.createElement("span");
@@ -486,10 +562,8 @@ function handleBargeIn(source = "local") {
     currentAssistantBubble = null;
   }
 
-  // 3. Update state machine
   setAssistantState("interrupted");
 
-  // 4. Send interrupt signal to backend
   if (websocket && websocket.readyState === WebSocket.OPEN && source !== "server") {
     try {
       websocket.send(JSON.stringify({ type: "interrupt" }));
@@ -498,7 +572,6 @@ function handleBargeIn(source = "local") {
     }
   }
 
-  // 5. Seamlessly return to listening if microphone is streaming
   setTimeout(() => {
     if (currentAssistantState === "interrupted") {
       setAssistantState(isStreaming ? "listening" : "idle");
@@ -510,28 +583,56 @@ function handleBargeIn(source = "local") {
 // WebSocket Lifecycle & Real-Time Event Dispatch
 // ==============================================================================
 
+function clearReconnectTimer() {
+  if (reconnectTimer !== null) {
+    clearTimeout(reconnectTimer);
+    reconnectTimer = null;
+  }
+}
+
+function scheduleReconnect(delayMs = 2500) {
+  if (reconnectTimer !== null) return;
+
+  reconnectTimer = setTimeout(() => {
+    reconnectTimer = null;
+    initWebSocket();
+  }, delayMs);
+}
+
 function initWebSocket() {
-  if (websocket && (websocket.readyState === WebSocket.OPEN || websocket.readyState === WebSocket.CONNECTING)) {
-    return;
+  if (websocket) {
+    const state = websocket.readyState;
+    if (state === WebSocket.OPEN || state === WebSocket.CONNECTING || state === WebSocket.CLOSING) {
+      return;
+    }
+    websocket = null;
   }
 
-  const wsUrl = CONFIG.WS_URL;
+  clearReconnectTimer();
+
+  const wsUrl = getAppConfig().WS_URL;
   console.log("[WebSocket] Connecting to:", wsUrl);
   setConnectionState("connecting", "Connecting...");
   setAssistantState("connecting");
 
+  let socket;
   try {
-    websocket = new WebSocket(wsUrl);
-    websocket.binaryType = "arraybuffer";
+    socket = new WebSocket(wsUrl);
+    websocket = socket;
+    socket.binaryType = "arraybuffer";
 
-    websocket.onopen = () => {
+    socket.onopen = () => {
+      if (websocket !== socket) return;
+
       console.log("[WebSocket] Connected successfully.");
-      clearTimeout(reconnectTimer);
+      clearReconnectTimer();
       setConnectionState("connected", "Connected");
       setAssistantState(isStreaming ? "listening" : "idle");
     };
 
-    websocket.onmessage = (event) => {
+    socket.onmessage = (event) => {
+      if (websocket !== socket) return;
+
       try {
         const message = JSON.parse(event.data);
         handleServerMessage(message);
@@ -540,31 +641,41 @@ function initWebSocket() {
       }
     };
 
-    websocket.onerror = (err) => {
+    socket.onerror = (err) => {
+      if (websocket !== socket) return;
+
       console.error("[WebSocket] Error:", err);
       showToast("Connection encountered an error.");
       setConnectionState("disconnected", "Error");
     };
 
-    websocket.onclose = (event) => {
+    socket.onclose = (event) => {
+      if (websocket !== socket) return;
+
       console.warn("[WebSocket] Disconnected code:", event.code);
+      websocket = null;
+
       if (isStreaming) {
         stopStreaming();
       }
+
       setConnectionState("disconnected", "Disconnected");
       setAssistantState("idle");
-      reconnectTimer = setTimeout(initWebSocket, 2500);
+      scheduleReconnect(2500);
     };
   } catch (err) {
+    if (websocket === socket) {
+      websocket = null;
+    }
+
     console.error("[WebSocket] Connection attempt failed:", err);
     showToast("Could not connect to voice assistant server.");
     setConnectionState("disconnected", "Offline");
-    reconnectTimer = setTimeout(initWebSocket, 3000);
+    scheduleReconnect(3000);
   }
 }
 
 function handleServerMessage(message) {
-  // 1. Status Events
   if (message.type === "status") {
     if (message.status === "connected" || message.status === "ready") {
       setConnectionState("connected", "Connected");
@@ -582,11 +693,8 @@ function handleServerMessage(message) {
     }
   }
 
-  // 2. Interruption Event (Server-side Gemini VAD barge-in notification)
   else if (message.type === "interrupted") {
     console.log("[WebSocket] Server reported interruption. Turn ID:", message.turn_id);
-    // Only abort audio playback if the user is actively speaking over the assistant (true barge-in).
-    // Server-side turn-end signals must not kill the assistant's speech.
     if (isStreaming && currentVoiceEnergy > 0.03) {
       if (audioPlayer) {
         audioPlayer.stop(message.turn_id);
@@ -595,13 +703,11 @@ function handleServerMessage(message) {
     }
   }
 
-  // 3. Real-Time Speech Transcription (USER or ASSISTANT)
   else if (message.type === "transcript") {
     const role = (message.role || "user").toLowerCase();
     const text = message.text || "";
 
     if (role === "user") {
-      // Filter out backend echoes of manually typed and sent text prompts
       const trimmedText = (text || "").trim();
       if (pendingSentText && (trimmedText === pendingSentText.trim() || trimmedText === pendingSentText)) {
         pendingSentText = null;
@@ -628,7 +734,6 @@ function handleServerMessage(message) {
     scrollConversationToBottom();
   }
 
-  // 4. Incremental Model Text Deltas
   else if (message.type === "text") {
     finalizeUserTurn();
     const textDelta = message.text || "";
@@ -637,31 +742,24 @@ function handleServerMessage(message) {
     scrollConversationToBottom();
   }
 
-  // 5. Real-Time Streamed Audio Chunks (24 kHz PCM) with Stale Turn Protection
   else if (message.type === "audio") {
     finalizeUserTurn();
     if (message.data) {
-      if (!audioPlayer) {
-        audioPlayer = new AudioPlayer({
-          sampleRate: 24000,
-          onPlaybackStarted: () => setAssistantState("speaking"),
-          onPlaybackEnded: () => {
-            if (currentAssistantState === "speaking") {
-              setAssistantState(isStreaming ? "listening" : "idle");
-            }
-          },
-        });
+      const player = getOrCreateAudioPlayer();
+      if (!player) {
+        console.warn("[AudioPlayer] Ignoring audio chunk because player dependency is unavailable.");
+        return;
       }
+
       try {
         const pcmBuffer = base64ToArrayBuffer(message.data);
-        audioPlayer.playChunk(pcmBuffer, message.turn_id);
+        player.playChunk(pcmBuffer, message.turn_id);
       } catch (err) {
         console.error("[AudioPlayer] Playback error:", err);
       }
     }
   }
 
-  // 6. Tool Call Event Encountered
   else if (message.type === "tool_call") {
     finalizeUserTurn();
     setAssistantState("thinking");
@@ -680,14 +778,13 @@ function handleServerMessage(message) {
       icon = "📝";
     }
 
-    showToolActivity(icon, toolLabel, 0); // Keep visible during execution
+    showToolActivity(icon, toolLabel, 0);
 
     const bubble = getOrCreateAssistantBubble();
     bubble.innerHTML += ` <span class="tool-chip">${icon} ${toolLabel}</span>`;
     scrollConversationToBottom();
   }
 
-  // 7. Tool Result Event (Execution Finished)
   else if (message.type === "tool_result") {
     const toolName = message.name || "Tool";
     const res = message.result || {};
@@ -708,7 +805,6 @@ function handleServerMessage(message) {
     showToolActivity(icon, summaryText, 3500);
   }
 
-  // 8. Turn Complete Event
   else if (message.type === "turn_complete") {
     finalizeUserTurn();
     currentAssistantBubble = null;
@@ -722,25 +818,6 @@ function handleServerMessage(message) {
 // Real-Time Microphone Streaming
 // ==============================================================================
 
-async function ensureAudioPlayerReady() {
-  if (!audioPlayer) {
-    audioPlayer = new AudioPlayer({
-      sampleRate: 24000,
-      onPlaybackStarted: () => setAssistantState("speaking"),
-      onPlaybackEnded: () => {
-        if (currentAssistantState === "speaking") {
-          setAssistantState(isStreaming ? "listening" : "idle");
-        }
-      },
-    });
-  }
-  try {
-    await audioPlayer._ensureContext();
-  } catch (err) {
-    console.warn("[AudioPlayer] Context resume on gesture failed:", err);
-  }
-}
-
 async function startStreaming() {
   if (!websocket || websocket.readyState !== WebSocket.OPEN) {
     showToast("Connecting to server. Please wait a moment...");
@@ -748,16 +825,17 @@ async function startStreaming() {
     return;
   }
 
-  await ensureAudioPlayerReady();
+  try {
+    await ensureAudioPlayerReady();
+  } catch (err) {
+    showToast(err.message || "Audio is not ready yet.");
+    return;
+  }
 
-  if (!audioStreamer) {
-    audioStreamer = new AudioStreamer({
-      targetSampleRate: 16000,
-      bufferSize: 2048,
-      onVoiceActivity: (rms) => {
-        currentVoiceEnergy = rms;
-      },
-    });
+  const streamer = getOrCreateAudioStreamer();
+  if (!streamer) {
+    showToast("Microphone support is still loading. Please try again.");
+    return;
   }
 
   if (audioPlayer) {
@@ -776,10 +854,10 @@ async function startStreaming() {
   try {
     websocket.send(JSON.stringify({ type: "start_audio" }));
 
-    await audioStreamer.start((pcmChunk) => {
+    await streamer.start((pcmChunk) => {
       if (websocket && websocket.readyState === WebSocket.OPEN) {
         if (audioPlayer && audioPlayer.isPlaying) {
-          return; // Prevent speaker echo from triggering model interruption
+          return;
         }
         websocket.send(pcmChunk);
         chunksSent++;
@@ -791,7 +869,6 @@ async function startStreaming() {
 
     isStreaming = true;
     setAssistantState("listening");
-
   } catch (err) {
     console.error("[Microphone] Error starting stream:", err);
     showToast(err.message || "Failed to access microphone.");
@@ -819,26 +896,19 @@ function stopStreaming() {
   }
 }
 
-if (recordButton) {
-  recordButton.onclick = async () => {
+async function handleToggleStreaming() {
+  try {
     await ensureAudioPlayerReady();
-    if (isStreaming) {
-      stopStreaming();
-    } else {
-      await startStreaming();
-    }
-  };
-}
+  } catch (err) {
+    showToast(err.message || "Audio is not ready yet.");
+    return;
+  }
 
-if (voiceOrb) {
-  voiceOrb.onclick = async () => {
-    await ensureAudioPlayerReady();
-    if (isStreaming) {
-      stopStreaming();
-    } else {
-      await startStreaming();
-    }
-  };
+  if (isStreaming) {
+    stopStreaming();
+  } else {
+    await startStreaming();
+  }
 }
 
 // ==============================================================================
@@ -850,11 +920,17 @@ let pendingSentText = null;
 
 async function handleSendText() {
   if (isSendingText) return;
-  await ensureAudioPlayerReady();
+
+  try {
+    await ensureAudioPlayerReady();
+  } catch (err) {
+    showToast(err.message || "Audio is not ready yet.");
+    return;
+  }
+
   const text = (textInput?.value || "").trim();
   if (!text) return;
 
-  // Clear the input box immediately so user text disappears upon clicking send / Enter
   if (textInput) {
     textInput.value = "";
   }
@@ -866,16 +942,13 @@ async function handleSendText() {
         handleBargeIn("text_input");
       }
 
-      // Finalize any in-progress speech turn before sending manual text
       finalizeUserTurn();
 
-      // Reset speech transcription turn state so this text isn't treated as incoming speech
       isUserTurnActive = false;
       currentUserTranscript = "";
       finalUserTranscript = "";
       pendingSentText = text;
 
-      // Render exactly ONE user bubble for the typed message
       const bubble = getOrCreateUserBubble();
       bubble.textContent = text;
       bubble.classList.remove("turn-interim");
@@ -887,7 +960,6 @@ async function handleSendText() {
       scrollConversationToBottom();
     } finally {
       isSendingText = false;
-      // Guarantee input box remains empty
       if (textInput) {
         textInput.value = "";
       }
@@ -899,41 +971,78 @@ async function handleSendText() {
   initWebSocket();
 }
 
-if (textButton) {
-  textButton.onclick = handleSendText;
+function handleTextFormSubmit(event) {
+  event.preventDefault();
+  handleSendText();
 }
 
-if (textForm) {
-  textForm.addEventListener("submit", (e) => {
-    e.preventDefault();
-    handleSendText();
+async function handleTextInputKeydown(event) {
+  if (event.key === "Enter") {
+    event.preventDefault();
+    await handleSendText();
+  }
+}
+
+function unlockAudioOnFirstGesture() {
+  ensureAudioPlayerReady().catch((err) => {
+    console.warn("[AudioPlayer] Initial unlock failed:", err);
   });
 }
 
-if (textInput) {
-  textInput.addEventListener("keydown", async (e) => {
-    if (e.key === "Enter") {
-      e.preventDefault();
-      await handleSendText();
-    }
-  });
+function bindEventListeners() {
+  if (eventListenersBound) return;
+  eventListenersBound = true;
+
+  if (clearConversationBtn) {
+    clearConversationBtn.addEventListener("click", handleClearConversation);
+  }
+
+  if (recordButton) {
+    recordButton.addEventListener("click", handleToggleStreaming);
+  }
+
+  if (voiceOrb) {
+    voiceOrb.addEventListener("click", handleToggleStreaming);
+  }
+
+  if (textButton) {
+    textButton.addEventListener("click", handleSendText);
+  }
+
+  if (textForm) {
+    textForm.addEventListener("submit", handleTextFormSubmit);
+  }
+
+  if (textInput) {
+    textInput.addEventListener("keydown", handleTextInputKeydown);
+  }
+
+  document.addEventListener("click", unlockAudioOnFirstGesture, { once: true });
 }
 
 // ==============================================================================
-// Initialization on Page Load
+// Safe One-Time Application Initialization
 // ==============================================================================
 
-window.addEventListener("DOMContentLoaded", () => {
+function initializeApplication() {
+  if (appInitialized) {
+    return;
+  }
+  appInitialized = true;
+
+  bindDomElements();
+  bindEventListeners();
+  initializeAudioSubsystem();
   initWaveform();
   setAssistantState("idle");
+  setConnectionState("connecting", "Connecting...");
   initWebSocket();
 
-  // Unlock AudioContext on very first page click/tap
-  document.addEventListener(
-    "click",
-    () => {
-      ensureAudioPlayerReady();
-    },
-    { once: true }
-  );
-});
+  console.log("[App] Initialized.");
+}
+
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initializeApplication, { once: true });
+} else {
+  initializeApplication();
+}
