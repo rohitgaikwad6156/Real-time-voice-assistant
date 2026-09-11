@@ -14,6 +14,7 @@
   let conversationSwitchSequence = 0;
   let activeConversationId = null;
   let knownConversations = [];
+  let clearButtonBound = false;
 
   window.VOICE_AUTH_STATE = {
     ready: false,
@@ -287,6 +288,75 @@
     return { stale: false, turns };
   }
 
+  function bindPersistentClearButton() {
+    if (clearButtonBound) return;
+
+    const button = document.getElementById("clearConversationBtn");
+    if (!button) return;
+
+    clearButtonBound = true;
+    button.addEventListener("click", async (event) => {
+      // Capture this click before app.js's old UI-only handler can run.
+      event.preventDefault();
+      event.stopImmediatePropagation();
+
+      const conversationId = activeConversationId || localStorage.getItem(CONVERSATION_KEY);
+      if (!conversationId) return;
+
+      const confirmed = window.confirm(
+        "Delete all messages in this conversation? This cannot be undone."
+      );
+      if (!confirmed) return;
+
+      const clearSequence = ++conversationSwitchSequence;
+      const originalText = button.textContent;
+      button.disabled = true;
+      button.textContent = "Clearing...";
+
+      if (typeof window.VOICE_APP_BEGIN_CONVERSATION_SWITCH === "function") {
+        window.VOICE_APP_BEGIN_CONVERSATION_SWITCH();
+      }
+      updateStartupStatus("Clearing conversation...");
+
+      try {
+        await api(`/api/conversations/${encodeURIComponent(conversationId)}/messages`, {
+          method: "DELETE",
+        });
+
+        // A newer sidebar switch owns the UI now; do not overwrite it.
+        if (clearSequence !== conversationSwitchSequence || activeConversationId !== conversationId) {
+          return;
+        }
+
+        const list = document.getElementById("conversationList");
+        if (list) renderEmptyConversation(list);
+
+        const counter = document.getElementById("turnCounter");
+        if (counter) counter.textContent = "0 turns";
+        if (typeof window.VOICE_APP_SYNC_TURN_COUNT === "function") {
+          window.VOICE_APP_SYNC_TURN_COUNT(0);
+        }
+
+        if (typeof window.VOICE_APP_COMPLETE_CONVERSATION_SWITCH === "function") {
+          window.VOICE_APP_COMPLETE_CONVERSATION_SWITCH({ turnCount: 0 });
+        }
+
+        updateStartupStatus("Conversation cleared");
+      } catch (err) {
+        if (clearSequence === conversationSwitchSequence) {
+          if (typeof window.VOICE_APP_CANCEL_CONVERSATION_SWITCH === "function") {
+            window.VOICE_APP_CANCEL_CONVERSATION_SWITCH();
+          }
+          updateStartupStatus("Could not clear conversation");
+          window.alert(err.message || "Could not clear this conversation.");
+        }
+      } finally {
+        button.disabled = false;
+        button.textContent = originalText;
+      }
+    }, true);
+  }
+
   function highlightActiveConversation(conversationId, switching = false) {
     document.querySelectorAll(".history-item[data-conversation-id]").forEach((item) => {
       const isActive = item.dataset.conversationId === conversationId;
@@ -308,7 +378,6 @@
     const previousConversationId = activeConversationId;
     const previousConfig = window.APP_CONFIG ? { ...window.APP_CONFIG } : null;
 
-    // Step 1: persist the requested active conversation immediately.
     localStorage.setItem(CONVERSATION_KEY, conversationId);
     localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
     activeConversationId = conversationId;
@@ -317,8 +386,6 @@
     }
     highlightActiveConversation(conversationId, true);
 
-    // Stop old-conversation traffic before loading the new history. This prevents
-    // late packets from the old socket from being appended to the new thread.
     if (typeof window.VOICE_APP_BEGIN_CONVERSATION_SWITCH === "function") {
       window.VOICE_APP_BEGIN_CONVERSATION_SWITCH();
     }
@@ -326,12 +393,9 @@
     updateStartupStatus("Loading conversation...");
 
     try {
-      // Steps 2-3: load and render only this conversation's stored messages.
       const history = await renderHistoryMessages(conversationId, switchSequence);
       if (history.stale || switchSequence !== conversationSwitchSequence) return;
 
-      // Step 4: only after history is ready, publish the new authenticated WS URL
-      // and let app.js establish one fresh socket for this conversation.
       configureAuthenticatedWebSocket(token, conversationId);
       highlightActiveConversation(conversationId, false);
 
@@ -344,8 +408,6 @@
       if (switchSequence !== conversationSwitchSequence) return;
 
       console.warn("Could not switch conversation", err);
-
-      // Roll back to the previous conversation without mixing UI/socket state.
       activeConversationId = previousConversationId;
       if (previousConversationId) {
         localStorage.setItem(CONVERSATION_KEY, previousConversationId);
@@ -423,7 +485,6 @@
   }
 
   async function selectConversationForSession(conversations) {
-    // Backend returns conversations newest-first by updated_at.
     if (conversations.length > 0) {
       const forceLatest = localStorage.getItem(SELECT_LATEST_ON_BOOT_KEY) === "1";
       const storedId = localStorage.getItem(CONVERSATION_KEY);
@@ -438,7 +499,6 @@
       return { conversation: selected, conversations };
     }
 
-    // Zero server conversations: this is the only automatic creation path.
     const created = await api("/api/conversations", {
       method: "POST",
       body: JSON.stringify({ title: "New conversation" }),
@@ -479,6 +539,7 @@
         configureAuthenticatedWebSocket(token, active);
         renderAuthenticatedSidebar(me.user, conversations, active);
         await renderHistoryMessages(active);
+        bindPersistentClearButton();
 
         updateStartupStatus("Session ready — starting assistant...");
         publishAuthResult(true, me.user, active);
