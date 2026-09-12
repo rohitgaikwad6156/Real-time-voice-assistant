@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-  <meta name="voice-assistant-build" content="public-canonical-1.9">
+  <meta name="voice-assistant-build" content="public-canonical-2.0">
   <title>Real-Time AI Voice Assistant</title>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -18,7 +18,7 @@
         <div class="brand-titles"><h1>REAL-TIME</h1><h2>VOICE ASSISTANT</h2></div>
       </div>
       <div class="top-meta">
-        <div id="connectionStatus" class="connection-pill connecting" aria-live="polite"><span class="status-dot"></span><span id="connectionText">Waking server...</span></div>
+        <div id="connectionStatus" class="connection-pill connecting" aria-live="polite"><span class="status-dot"></span><span id="connectionText">Starting...</span></div>
         <div class="model-pill">Gemini 2.5 Native Audio</div>
       </div>
     </header>
@@ -32,7 +32,7 @@
           </div>
         </div>
         <div class="waveform-container"><canvas id="waveformCanvas" width="480" height="64" aria-hidden="true"></canvas></div>
-        <h3 id="heroPrompt" class="hero-prompt">"Waking server..."</h3>
+        <h3 id="heroPrompt" class="hero-prompt">"Starting assistant..."</h3>
         <div class="status-tracker" role="status">
           <span id="statusItemConnected" class="status-item">● Connected</span>
           <span id="statusItemListening" class="status-item">● Listening</span>
@@ -63,7 +63,7 @@
           <button id="textButton" class="btn-send" type="button" aria-label="Send message" disabled><span>Send</span></button>
         </form>
       </div>
-      <div class="footer-meta"><div id="stateBadge" class="state-badge state-connecting">CONNECTING</div><span id="recordStatus" class="status-summary">Waking server...</span></div>
+      <div class="footer-meta"><div id="stateBadge" class="state-badge state-connecting">CONNECTING</div><span id="recordStatus" class="status-summary">Starting...</span></div>
     </footer>
 
     <div id="toastContainer" class="toast-container" aria-live="assertive"></div>
@@ -79,12 +79,8 @@
       window.__VOICE_ASSISTANT_BOOT_STARTED__ = true;
 
       const BACKEND = "https://real-time-voice-assistant-9bh1.onrender.com";
-      const INITIAL_RETRY_DELAY_MS = 1500;
-      const SLOW_RETRY_DELAY_MS = 3000;
-      const HEALTH_REQUEST_TIMEOUT_MS = 10000;
-      const LONG_WAIT_MS = 45000;
-      const VERY_LONG_WAIT_MS = 90000;
-
+      const WARM_REQUEST_TIMEOUT_MS = 15000;
+      const WARM_RETRY_DELAY_MS = 2500;
       let voiceAppLoaded = false;
 
       const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -93,29 +89,9 @@
         const connectionText = document.getElementById("connectionText");
         const heroPrompt = document.getElementById("heroPrompt");
         const recordStatus = document.getElementById("recordStatus");
-        const recordButtonText = document.getElementById("recordButtonText");
-        const textInput = document.getElementById("textInput");
-
         if (connectionText) connectionText.textContent = text;
         if (heroPrompt) heroPrompt.textContent = `"${text}"`;
         if (recordStatus) recordStatus.textContent = text;
-        if (recordButtonText) recordButtonText.textContent = "Starting...";
-        if (textInput) textInput.placeholder = "Waiting for assistant...";
-      }
-
-      function enableControls() {
-        const recordButton = document.getElementById("recordButton");
-        const textInput = document.getElementById("textInput");
-        const textButton = document.getElementById("textButton");
-        const recordButtonText = document.getElementById("recordButtonText");
-
-        if (recordButton) recordButton.disabled = false;
-        if (textInput) {
-          textInput.disabled = false;
-          textInput.placeholder = "Type your question or query (e.g., Pune weather, remind me)...";
-        }
-        if (textButton) textButton.disabled = false;
-        if (recordButtonText) recordButtonText.textContent = "Start Speaking";
       }
 
       function loadScriptOnce(id, src) {
@@ -150,10 +126,9 @@
         });
       }
 
-      async function checkBackendHealth() {
+      async function pingBackendOnce() {
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), HEALTH_REQUEST_TIMEOUT_MS);
-
+        const timeoutId = setTimeout(() => controller.abort(), WARM_REQUEST_TIMEOUT_MS);
         try {
           const response = await fetch(`${BACKEND}/health?t=${Date.now()}`, {
             method: "GET",
@@ -162,10 +137,7 @@
             credentials: "omit",
             signal: controller.signal,
           });
-
-          if (!response.ok) return false;
-          const payload = await response.json().catch(() => null);
-          return !payload || payload.status === "ok";
+          return response.ok;
         } catch (_) {
           return false;
         } finally {
@@ -173,33 +145,15 @@
         }
       }
 
-      async function waitForBackend() {
-        const startedAt = Date.now();
-        let attempt = 0;
-        updateStartupUI("Waking server...");
-
-        while (true) {
-          attempt += 1;
-
-          if (await checkBackendHealth()) {
-            updateStartupUI("Server ready — checking account...");
+      async function warmBackendInBackground() {
+        // Do not block login UI on Render cold-start. This request starts waking
+        // the free service while auth.js is already rendering the account screen.
+        for (let attempt = 0; attempt < 12; attempt++) {
+          if (await pingBackendOnce()) {
+            window.__VOICE_BACKEND_WARM__ = true;
             return;
           }
-
-          const elapsed = Date.now() - startedAt;
-
-          if (!navigator.onLine) {
-            updateStartupUI("Waiting for network connection...");
-          } else if (elapsed >= VERY_LONG_WAIT_MS) {
-            updateStartupUI("Server is taking longer than usual — still retrying...");
-          } else if (elapsed >= LONG_WAIT_MS) {
-            updateStartupUI("Still waking server — please keep this tab open...");
-          } else if (attempt > 1) {
-            updateStartupUI("Waking server... almost ready.");
-          }
-
-          const delay = elapsed >= LONG_WAIT_MS ? SLOW_RETRY_DELAY_MS : INITIAL_RETRY_DELAY_MS;
-          await sleep(delay);
+          await sleep(WARM_RETRY_DELAY_MS);
         }
       }
 
@@ -207,7 +161,15 @@
         if (voiceAppLoaded) return;
 
         try {
-          await loadScriptOnce("voice-auth-script", "/static/auth.js?v=1.9");
+          updateStartupUI("Checking account...");
+
+          // Authentication loads immediately. It no longer waits for /health.
+          await loadScriptOnce("voice-auth-script", "/static/auth.js?v=2.0");
+
+          // Google sign-in is an enhancement to the login overlay. A Google
+          // script/config issue must never block normal email/password login.
+          loadScriptOnce("voice-google-auth-script", "/static/google-auth.js?v=1.0")
+            .catch((error) => console.warn("[Startup] Google auth UI unavailable:", error));
 
           if (!window.VOICE_AUTH_READY) {
             throw new Error("Authentication readiness signal was not created.");
@@ -226,28 +188,22 @@
 
           voiceAppLoaded = true;
           await loadScriptOnce("voice-app-script", "/static/app.js?v=3.12");
-          enableControls();
+          // app.js itself enables controls only after the authenticated WebSocket opens.
         } catch (error) {
           voiceAppLoaded = false;
           console.error("[Startup] Authenticated frontend boot failed:", error);
           updateStartupUI("Assistant startup delayed — retrying...");
-          await sleep(SLOW_RETRY_DELAY_MS);
+          await sleep(2500);
           return initializeAuthenticatedFrontendOnce();
         }
       }
 
-      async function bootCanonicalFrontend() {
-        await waitForBackend();
-        await initializeAuthenticatedFrontendOnce();
-      }
-
-      bootCanonicalFrontend().catch((error) => {
+      // Start waking Render immediately, but never make the UI wait for it.
+      warmBackendInBackground().catch(() => {});
+      initializeAuthenticatedFrontendOnce().catch((error) => {
         console.error("[Startup] Unexpected boot error:", error);
         updateStartupUI("Startup interrupted — retrying...");
-        setTimeout(() => {
-          window.__VOICE_ASSISTANT_BOOT_STARTED__ = false;
-          window.location.reload();
-        }, SLOW_RETRY_DELAY_MS);
+        setTimeout(() => window.location.reload(), 3000);
       });
     })();
   </script>
