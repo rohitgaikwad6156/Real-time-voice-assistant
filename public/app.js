@@ -62,7 +62,7 @@ function bindDomElements() {
 
 function getAppConfig() {
   const config = window.APP_CONFIG;
-  if (!config?.API_URL || !config?.WS_URL) return null;
+  if (!config?.API_URL || !config?.WS_URL || !config?.AUTH_TOKEN || !config?.CONVERSATION_ID) return null;
   return config;
 }
 
@@ -543,9 +543,13 @@ function initWebSocket() {
     socket.onopen = () => {
       if (websocket !== socket || conversationSwitchInProgress) return;
       clearReconnectTimer();
-      setConnectionState("connected", "Connected");
-      setAssistantState(isStreaming ? "listening" : "idle");
-      setControlsEnabled(true);
+      setConnectionState("connecting", "Authenticating...");
+      setControlsEnabled(false);
+      socket.send(JSON.stringify({
+        type: "auth",
+        token: config.AUTH_TOKEN,
+        conversation_id: config.CONVERSATION_ID,
+      }));
     };
 
     socket.onmessage = (event) => {
@@ -669,9 +673,13 @@ function handleServerMessage(message) {
   if (conversationSwitchInProgress) return;
 
   if (message.type === "status") {
-    if (message.status === "connected" || message.status === "ready") {
+    if (message.status === "authenticated" || message.status === "ready") {
       setConnectionState("connected", "Connected");
       setAssistantState(isStreaming ? "listening" : "idle");
+      setControlsEnabled(true);
+    } else if (message.status === "connected") {
+      setConnectionState("connecting", "Authenticating...");
+      setControlsEnabled(false);
     } else if (message.status === "streaming") {
       setAssistantState("listening", `Listening (${chunksSent} chunks sent)`);
     } else if (message.status === "stopped") {
@@ -680,6 +688,16 @@ function handleServerMessage(message) {
       showToast(message.message || "Server error occurred.");
       setAssistantState("error", message.message);
       if (isStreaming) stopStreaming();
+    } else if (message.status === "auth_error" || message.status === "auth_required") {
+      const authMessage = message.message || "Authentication is required.";
+      showToast(authMessage);
+      setControlsEnabled(false);
+      setConnectionState("disconnected", "Sign in required");
+      if (isStreaming) stopStreaming();
+      if (websocket) websocket.close(1000, "Authentication required");
+      if (typeof window.VOICE_HANDLE_AUTH_FAILURE === "function") {
+        window.VOICE_HANDLE_AUTH_FAILURE(authMessage);
+      }
     }
   } else if (message.type === "interrupted") {
     if (isStreaming && currentVoiceEnergy > 0.03) {

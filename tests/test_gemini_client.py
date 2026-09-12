@@ -96,13 +96,31 @@ def test_connect_with_missing_key_raises_config_error():
     asyncio.run(_test())
 
 
-def test_connect_with_invalid_key_raises_connection_error():
-    """Verify client.connect() catches APIError and raises GeminiConnectionError on auth failure."""
+def test_connect_wraps_connection_errors_without_network(monkeypatch):
+    """Verify client.connect() wraps SDK connection failures without making a live request."""
+    class FailingConnection:
+        async def __aenter__(self):
+            raise OSError("simulated connection failure")
+
+        async def __aexit__(self, exc_type, exc, tb):
+            return False
+
+    class FakeLive:
+        def connect(self, **kwargs):
+            return FailingConnection()
+
+    class FakeClient:
+        class Aio:
+            live = FakeLive()
+
+        aio = Aio()
+
     async def _test():
-        client = GeminiLiveClient(api_key="invalid_test_key_for_testing")
+        client = GeminiLiveClient(api_key="test_key_for_testing")
+        monkeypatch.setattr(client, "_get_or_create_client", lambda: FakeClient())
         with pytest.raises(GeminiConnectionError) as exc_info:
             async with client.connect():
                 pass
-        assert "Gemini Live API connection failed" in str(exc_info.value)
+        assert "Failed to connect to Gemini Live session" in str(exc_info.value)
 
     asyncio.run(_test())

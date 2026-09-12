@@ -1,11 +1,5 @@
 {
   "framework": null,
   "outputDirectory": "public",
-  "cleanUrls": true,
-  "rewrites": [
-    {
-      "source": "/static/:path*",
-      "destination": "/:path*"
-    }
-  ]
+  "cleanUrls": true
 }

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import binascii
 import json
 import logging
 import os
@@ -17,9 +18,13 @@ from google.genai import types
 from app.database.mongodb import ensure_conversation, save_message
 from app.services.auth import decode_access_token
 from app.services.gemini_client import GeminiLiveClient, GeminiLiveSession, get_gemini_client
+from app.services.rate_limiter import rate_limiter
 from app.services.tool_executor import ToolExecutor, get_default_tool_executor
 
 logger = logging.getLogger("voice_assistant.session_manager")
+
+MAX_WS_AUDIO_CHUNK_BYTES = 1024 * 1024
+MAX_WS_TEXT_LENGTH = 10_000
 
 
 def sanitize_error_message(raw_msg: str) -> str:
@@ -212,6 +217,10 @@ class VoiceSession:
             await self.send_status("session_ended", "Session ended by Gemini.")
 
     async def send_audio(self, pcm_bytes: bytes) -> None:
+        if not pcm_bytes:
+            raise ValueError("Empty audio chunk received.")
+        if len(pcm_bytes) > MAX_WS_AUDIO_CHUNK_BYTES:
+            raise ValueError("Audio chunk exceeds the 1 MB limit.")
         session = await self.ensure_gemini_connected()
         try:
             await session.send_audio_chunk(pcm_bytes, mime_type="audio/pcm;rate=16000")
@@ -239,6 +248,11 @@ class VoiceSession:
         payload.update(extra)
         return await self.send_json(payload)
 
+    async def handle_interrupt(self) -> None:
+        """Advance the turn id so queued audio from the interrupted turn is discarded."""
+        self.turn_id += 1
+        await self.send_json({"type": "interrupted", "turn_id": self.turn_id, "session_id": self.session_id})
+
     async def close(self) -> None:
         self.is_active = False
         await self.reset_gemini_session()
@@ -254,10 +268,15 @@ class SessionManager:
         self._sessions[session_id] = session
         return session
 
-    async def remove_session(self, session_id: str) -> None:
+    @property
+    def active_session_count(self) -> int:
+        return len(self._sessions)
+
+    async def remove_session(self, session_id: str) -> Optional[VoiceSession]:
         session = self._sessions.pop(session_id, None)
         if session:
             await session.close()
+        return session
 
 
 session_manager = SessionManager()
@@ -271,25 +290,29 @@ def validate_message(raw_text: str) -> Dict[str, Any]:
     except json.JSONDecodeError as exc:
         raise ValueError("Malformed JSON.") from exc
     if not isinstance(data, dict) or not isinstance(data.get("type"), str):
-        raise ValueError("Invalid message payload.")
+        raise ValueError("Message payload has missing or invalid 'type' field.")
     return data
 
 
 async def handle_voice_websocket(websocket: WebSocket) -> None:
     await websocket.accept()
+    client_host = websocket.client.host if websocket.client else "unknown"
+    allowed, retry_after = rate_limiter.check(f"websocket:{client_host}", 60, 60)
+    if not allowed:
+        await websocket.send_json({
+            "type": "status",
+            "status": "error",
+            "message": "Too many connection attempts. Please try again shortly.",
+            "retry_after": retry_after,
+        })
+        await websocket.close(code=1013)
+        return
+
     session = session_manager.create_session(websocket)
     try:
-        # Browser clients may authenticate directly in the WebSocket URL. This lets
-        # the existing real-time client stay simple while still isolating user data.
-        token = websocket.query_params.get("token")
-        conversation_id = websocket.query_params.get("conversation_id")
-        if token:
-            try:
-                await session.authenticate(token, conversation_id)
-            except Exception as exc:
-                await session.send_status("auth_error", sanitize_error_message(str(exc)))
-        else:
-            await session.send_status("connected")
+        # Authenticate in the first JSON message so bearer tokens never appear in
+        # proxy access logs, browser history, or WebSocket URLs.
+        await session.send_status("connected")
 
         while session.is_active:
             data = await websocket.receive()
@@ -353,13 +376,22 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
                 await session.send_status("stopped", chunks=session.audio_chunks_received, bytes=session.total_bytes_received)
             elif action == "audio":
                 try:
-                    await session.send_audio(base64.b64decode(message.get("data", "")))
+                    encoded = message.get("data", "")
+                    if not isinstance(encoded, str):
+                        raise ValueError("Invalid base64 audio payload.")
+                    decoded = base64.b64decode(encoded, validate=True)
+                    await session.send_audio(decoded)
+                except (binascii.Error, ValueError) as exc:
+                    await session.send_status("error", sanitize_error_message(str(exc)))
                 except Exception as exc:
                     await session.send_status("error", sanitize_error_message(str(exc)))
             elif action == "text":
                 prompt = message.get("text", "").strip()
                 if not prompt:
                     await session.send_status("error", "Empty text received.")
+                    continue
+                if len(prompt) > MAX_WS_TEXT_LENGTH:
+                    await session.send_status("error", "Text input exceeds the 10,000 character limit.")
                     continue
                 session._reset_turn_buffers()
                 session._user_buffer = prompt
@@ -370,13 +402,12 @@ async def handle_voice_websocket(websocket: WebSocket) -> None:
                 except Exception as exc:
                     await session.send_status("error", sanitize_error_message(str(exc)))
             elif action == "interrupt":
-                session.turn_id += 1
-                await session.send_json({"type": "interrupted", "turn_id": session.turn_id, "session_id": session.session_id})
+                await session.handle_interrupt()
             else:
                 await session.send_status("error", f"Unsupported message type: '{action}'.")
     except WebSocketDisconnect:
         pass
     except Exception as exc:
-        logger.exception("Unexpected WebSocket error in %s: %s", session.session_id, exc)
+        logger.error("Unexpected WebSocket error in %s: %s", session.session_id, sanitize_error_message(str(exc)))
     finally:
         await session_manager.remove_session(session.session_id)

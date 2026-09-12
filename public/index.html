@@ -8,7 +8,7 @@
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
-  <link rel="stylesheet" href="/static/style.css?v=3.5">
+  <link rel="stylesheet" href="/style.css?v=3.5">
 </head>
 <body>
   <div class="app-layout">
@@ -71,8 +71,8 @@
     <button id="voiceButton" style="display:none"></button><audio id="recordedAudio" style="display:none"></audio><audio id="responseAudio" style="display:none"></audio><a id="downloadLink" style="display:none"></a>
   </div>
 
-  <script src="/static/audio-streamer.js?v=3.0"></script>
-  <script src="/static/audio-player.js?v=3.0"></script>
+  <script src="/audio-streamer.js?v=3.0"></script>
+  <script src="/audio-player.js?v=3.0"></script>
   <script>
     (() => {
       if (window.__VOICE_ASSISTANT_BOOT_STARTED__) return;
@@ -164,11 +164,11 @@
           updateStartupUI("Checking account...");
 
           // Authentication loads immediately. It no longer waits for /health.
-          await loadScriptOnce("voice-auth-script", "/static/auth.js?v=2.0");
+          await loadScriptOnce("voice-auth-script", "/auth.js?v=2.1");
 
           // Google sign-in is an enhancement to the login overlay. A Google
           // script/config issue must never block normal email/password login.
-          loadScriptOnce("voice-google-auth-script", "/static/google-auth.js?v=1.0")
+          loadScriptOnce("voice-google-auth-script", "/google-auth.js?v=1.0")
             .catch((error) => console.warn("[Startup] Google auth UI unavailable:", error));
 
           if (!window.VOICE_AUTH_READY) {
@@ -187,7 +187,7 @@
           }
 
           voiceAppLoaded = true;
-          await loadScriptOnce("voice-app-script", "/static/app.js?v=3.12");
+          await loadScriptOnce("voice-app-script", "/app.js?v=3.13");
           // app.js itself enables controls only after the authenticated WebSocket opens.
         } catch (error) {
           voiceAppLoaded = false;

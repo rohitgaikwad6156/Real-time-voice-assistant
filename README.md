@@ -1,661 +1,147 @@
 # Real-Time Voice Assistant
 
-**Live Production Deployments:**
-- 🌐 **Frontend (Vercel):** [https://real-time-voice-assistant-lovat.vercel.app](https://real-time-voice-assistant-lovat.vercel.app)
-- ⚙️ **Backend API (Render):** [https://real-time-voice-assistant-9bh1.onrender.com](https://real-time-voice-assistant-9bh1.onrender.com)
-- 🔌 **WebSocket Endpoint:** `wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice`
+A full-stack voice assistant built with FastAPI, Google Gemini Live, MongoDB, and the Web Audio API. The browser streams 16 kHz PCM microphone audio through an authenticated WebSocket and plays Gemini's streamed 24 kHz response.
 
----
+## Deployments
 
-A production-quality, full-stack real-time voice assistant built with Google Gemini Live API,
-FastAPI, WebSockets, and the Web Audio API. Speak a question, receive a spoken answer — with
-live weather look-ups, reminder creation, and personal note search powered by Gemini's native
-function-calling capability.
-
----
-
-## Overview
-
-The assistant streams 16 kHz PCM audio directly from the browser microphone to a FastAPI
-backend over a persistent WebSocket connection. The backend pipes each audio chunk to the
-Gemini Live API, which transcribes speech, reasons over it, invokes tools as needed, and
-streams 24 kHz PCM audio back in real time. The entire round-trip — microphone to speaker —
-operates without HTTP polling, without audio file uploads, and without request/response cycles.
-
----
-
-## Assessment Requirements
-
-### 1. End-to-End Functionality
-
-The complete pipeline is live:
-
-- Browser captures microphone audio with the Web Audio API and downsamples it to 16 kHz PCM.
-- Raw PCM frames are sent over WebSocket directly to FastAPI without any HTTP round-trips.
-- FastAPI forwards each frame to the Gemini Live API session using `send_realtime_input`.
-- Gemini transcribes speech, calls tools when needed, and streams audio tokens back.
-- The browser decodes incoming 24 kHz PCM chunks and plays them through an `AudioContext` node.
-
-Three callable tools work end-to-end: live weather (Open-Meteo), reminders (SQLite), and
-notes search (SQLite).
-
-### 2. Thoughtful LLM Use
-
-- **Gemini 2.5 Flash Native Audio** (`gemini-2.5-flash-native-audio-latest`) is used for the
-  real-time voice session — a model purpose-built for low-latency audio understanding.
-- The system prompt is tuned for spoken output: concise answers, no markdown, no tables.
-- Function calling is declared using the official `types.FunctionDeclaration` schema so
-  Gemini can autonomously decide when to fetch weather, create reminders, or search notes.
-- Input and output transcription are both enabled (`AudioTranscriptionConfig`) so every word
-  the user says and every word the assistant speaks is surfaced to the UI in real time.
-
-### 3. Speech-Handling Quality
-
-- **Input:** 16 kHz PCM mono, with echo cancellation and noise suppression requested from
-  the browser via `getUserMedia` constraints. The `AudioStreamer` class downsamples from the
-  browser's native sample rate using a manual Float32-to-Int16 resampler with a configurable
-  buffer size (default 2048 frames).
-- **Output:** 24 kHz PCM mono, streamed chunk-by-chunk. The `AudioPlayer` class schedules
-  each chunk contiguously on the `AudioContext` timeline using `AudioBufferSourceNode` to
-  guarantee gapless, jitter-resilient playback.
-- **Barge-in (interruption):** Both client-side (user presses Stop) and server-side
-  (Gemini Live `interrupted` signal) interruption are handled. When either fires, the
-  current `turn_id` is incremented and all in-flight audio chunks with the old turn ID are
-  discarded by the player before the next scheduled chunk plays.
-
-### 4. Code Quality
-
-- Backend is layered: `gemini_client` -> `session_manager` -> `tool_executor` -> tool
-  implementations. Each layer has a single responsibility and its own set of exceptions.
-- All tool functions return structured `{"status": "success"|"error", ...}` dictionaries —
-  never raw strings or unhandled exceptions.
-- The `ToolRegistry` / `ToolDefinition` / `ToolExecutor` trio cleanly decouples tool
-  registration from tool dispatch.
-- Duplicate function-call IDs are detected and silently skipped at both the session and
-  executor level.
-- API keys are sanitized out of log lines and WebSocket error messages via regex redaction
-  before they can leak to any client.
-- 127 automated pytest tests cover the full backend: health endpoint, registry schema,
-  weather validation (mocked HTTP), reminder creation, notes search, DB isolation,
-  invalid-argument rejection, simulated SQLite errors, lazy OpenAI initialization, and CORS preflights.
-
-### 5. Documentation
-
-- This README documents every working feature with verified commands and accurate
-  architecture.
-- Every public function and class has a docstring.
-- Inline comments explain non-obvious decisions (turn-ID deduplication, PCM downsampling
-  boundary handling, empty-string unit rejection, etc.).
-- The test suite itself is documentation: test names describe expected behaviour precisely.
-
-### 6. Creativity / Stretch Goals
-
-- **Animated Voice Orb** with seven CSS state classes (`idle`, `connecting`, `listening`,
-  `thinking`, `speaking`, `interrupted`, `error`) providing instant visual feedback.
-- **Live canvas waveform visualizer** driven by real-time voice-energy values from the
-  `AudioStreamer` and playback state from the `AudioPlayer`.
-- **Status Lifecycle Tracker** (Connected -> Listening -> Thinking -> Speaking) rendered as
-  pill badges updated from WebSocket events.
-- **Live Tool Activity Banner** with emoji icon and auto-dismiss that pops up when Gemini
-  invokes a tool.
-- **Real-time dual-role transcription** — user and assistant speech both appear as they are
-  spoken, not after.
-- **Concurrent tool execution** — `asyncio.gather` runs multiple simultaneous function calls
-  from a single Gemini response without blocking.
-- **Text input fallback** — a text box lets users interact without a microphone.
-
----
+- Frontend: <https://real-time-voice-assistant-lovat.vercel.app>
+- Backend: <https://real-time-voice-assistant-9bh1.onrender.com>
+- Health: <https://real-time-voice-assistant-9bh1.onrender.com/health>
 
 ## Features
 
-| Feature                                    | Status              |
-|--------------------------------------------|---------------------|
-| Real-time bidirectional voice streaming    | Live                |
-| Live weather (city, unit) via Open-Meteo   | Live                |
-| Reminder creation & retrieval via SQLite   | Live                |
-| Personal notes search via SQLite           | Live                |
-| Barge-in / interruption (client + server)  | Live                |
-| Real-time speech transcription (both roles)| Live                |
-| Animated voice orb & waveform visualizer   | Live                |
-| Concurrent multi-tool execution            | Live                |
-| Text fallback input                        | Live                |
-| API key redaction in error messages        | Live                |
-| 127 automated backend tests                | Live                |
-| Wake-word / always-on detection            | Not implemented     |
-
----
+- Real-time, bidirectional speech with interruption support
+- Text input fallback over the same Gemini Live session
+- Email/password and Google authentication
+- Per-user conversation history, reminders, and notes in MongoDB
+- Weather function calling through Open-Meteo
+- Animated voice state, live waveform, transcripts, and tool activity
+- JWT authentication sent as the first WebSocket message, never in its URL
+- Bounded audio uploads and process-local rate limiting for costly/public entry points
 
 ## Architecture
 
-```
-Microphone
- |
-Web Audio API (getUserMedia, ScriptProcessorNode)
- |  16 kHz PCM, mono, Int16 LE
-WebSocket  (wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice or ws://localhost:8000/ws/voice)
- |
-FastAPI  (handle_voice_websocket)
- |
-session_manager  (VoiceSession)
- |
-Gemini Live API  (google-genai AsyncSession, send_realtime_input)
- |
-Function Calling  (types.FunctionDeclaration x 3)
- |
-ToolExecutor  (asyncio.gather, deduplication)
- |
-Weather (Open-Meteo, httpx) / Reminders (SQLite) / Notes (SQLite)
- |
-Gemini  (reasons over tool results, generates spoken response)
- |
-Streaming Audio  (24 kHz PCM chunks, base64-encoded over WebSocket)
- |
-AudioPlayer  (AudioContext, AudioBufferSourceNode, timeline scheduling)
- |
-Speaker
+```text
+Vercel /public frontend
+  -> email, Google, and history REST requests
+  -> authenticated WebSocket (/ws/voice)
+      -> FastAPI VoiceSession
+          -> Gemini Live API
+          -> weather tool (Open-Meteo)
+          -> reminders and notes (MongoDB, scoped by user id)
+      <- transcript, audio, tool, and lifecycle events
 ```
 
-Transcription events flow in parallel:
+MongoDB stores users, conversations, messages, reminders, and authenticated notes. The older SQLite module remains only as a compatibility fallback for isolated unit tests and direct local tool calls without a user id. The deprecated OpenAI REST pipeline remains available to authenticated callers at `/api/text` and `/api/voice`.
 
-```
-Gemini Live API
- |  input_transcription / interim_input_transcription
- |  output_transcription
-WebSocket  {"type": "transcript", "role": "user"|"assistant", "text": "..."}
- |
-Conversation panel (real-time bubbles)
-```
-
----
-
-## Project Structure
-
-```
-real-time-voice-assistant/
-+-- app/
-|   +-- main.py                    # FastAPI app, routes, CORS middleware, WebSocket endpoint
-|   +-- database/
-|   |   +-- database.py            # SQLite init, CRUD, seed data
-|   |   +-- models.py              # NoteRecord, ReminderRecord dataclasses
-|   +-- services/
-|   |   +-- gemini_client.py       # GeminiLiveClient, GeminiLiveSession, config
-|   |   +-- session_manager.py     # VoiceSession, SessionManager, WebSocket handler
-|   |   +-- tool_executor.py       # ToolExecutor - dispatch, dedup, asyncio.gather
-|   |   +-- voice_pipeline.py      # Legacy OpenAI pipeline (unused in Live mode)
-|   |   +-- openai_client.py       # Lazy proxy for legacy endpoints
-|   +-- tools/
-|   |   +-- registry.py            # ToolRegistry, ToolDefinition, Gemini schemas
-|   |   +-- weather.py             # get_weather() - Open-Meteo via httpx
-|   |   +-- reminders.py           # create_reminder(), list_reminders(), clear_reminders()
-|   |   +-- notes.py               # search_notes(), add_note(), clear_notes()
-|   +-- static/                    # Backend static assets mounted on Render
-|       +-- index.html             # Single-page UI
-|       +-- style.css              # Dark theme, orb, waveform
-|       +-- app.js                 # Centralized CONFIG, state machine, WebSocket client
-|       +-- audio-streamer.js      # Mic capture, 16 kHz resampling, PCM conversion
-|       +-- audio-player.js        # Progressive 24 kHz PCM playback, barge-in
-|       +-- pcm-player.js          # Low-level PCM scheduling helper
-+-- public/                        # Static assets directory for Vercel CDN deployment
-+-- tests/
-|   +-- test_backend.py            # 74 unit tests (mocked, isolated DB, CORS preflight)
-|   +-- test_tools.py              # 20 tests incl. integration (@pytest.mark.integration)
-|   +-- test_reliability.py        # 9 reliability / concurrency tests
-|   +-- test_session_manager.py    # 17 WebSocket session lifecycle tests
-|   +-- test_gemini_client.py      # 7 Gemini client config tests
-+-- conftest.py                    # pytest marker registration (integration)
-+-- requirements.txt               # Python dependencies
-+-- render.yaml                    # Render service configuration (FastAPI + WebSockets)
-+-- vercel.json                    # Vercel deployment configuration (Static frontend)
-+-- .env.example                   # Environment variable template
-+-- assistant.db                   # SQLite database (auto-created on first run)
-```
-
----
-
-## Tech Stack
-
-| Layer              | Technology                                              |
-|--------------------|---------------------------------------------------------|
-| Backend framework  | FastAPI 0.141 + Uvicorn 0.52                            |
-| Real-time voice AI | Google Gemini 2.5 Flash Native Audio                    |
-| Gemini SDK         | google-genai 2.21.0                                     |
-| Weather API        | Open-Meteo (public, no key required for geocoding)      |
-| HTTP client        | httpx 0.28.1                                            |
-| Database           | SQLite 3 (stdlib, no ORM)                               |
-| Frontend           | Vanilla HTML / CSS / JS - no framework                  |
-| Audio capture      | Web Audio API (getUserMedia, ScriptProcessorNode)       |
-| Audio playback     | Web Audio API (AudioContext, AudioBufferSourceNode)     |
-| Testing            | pytest 9.1.1                                            |
-| Python             | 3.14                                                    |
-
----
-
-## Installation
-
-### Prerequisites
-
-- Python 3.11 or later
-- A modern browser that supports Web Audio API and WebSockets (Chrome, Edge, Firefox, Safari)
-- A Google Gemini API key (free tier available at https://aistudio.google.com)
-
-### Steps
-
-```bash
-# 1. Clone or download the project
-cd "Real time voice assistant"
-
-# 2. Create and activate a virtual environment
-python -m venv .venv
-
-# Windows
-.venv\Scripts\activate
-
-# macOS / Linux
-source .venv/bin/activate
-
-# 3. Install dependencies
-pip install -r requirements.txt
-
-# 4. Configure environment variables
-copy .env.example .env      # Windows
-cp .env.example .env        # macOS / Linux
-# Then edit .env and fill in GEMINI_API_KEY (required)
-```
-
----
-
-## Environment Variables
-
-Copy `.env.example` to `.env` and set the following:
-
-### Backend Variables (Render / Local Server)
-```env
-# Required - get a free key at https://aistudio.google.com
-GEMINI_API_KEY=your_gemini_api_key_here
-
-# Optional Gemini Live settings - defaults shown
-GEMINI_LIVE_MODEL=gemini-2.5-flash-native-audio-latest
-GEMINI_VOICE_NAME=Puck          # Puck | Charon | Kore | Fenrir | Aoede
-
-# Weather API - Open-Meteo is free and does not require an API key
-WEATHER_API_KEY=open-meteo
-WEATHER_API_PROVIDER=open-meteo
-
-# Server Port & CORS
-PORT=10000
-FRONTEND_URL=https://real-time-voice-assistant-lovat.vercel.app
-```
-
-The legacy OpenAI variables in `.env.example` are only used if calling the deprecated `/api/text` or `/api/voice` HTTP endpoints:
-
-```env
-OPENAI_API_KEY=         # only needed for legacy /api/text and /api/voice endpoints
-OPENAI_LLM_MODEL=       # only needed for legacy /api/text and /api/voice endpoints
-```
-
-### Frontend Variables (Vercel / Public)
-```env
-# Optional overrides (defaults to Render production URLs automatically)
-# VOICE_ASSISTANT_API_URL=https://real-time-voice-assistant-9bh1.onrender.com
-# VOICE_ASSISTANT_WS_URL=wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice
-```
-
----
-
-## Running Locally
-
-```bash
-# Activate the virtual environment first (see Installation above)
-uvicorn app.main:app --reload
-```
-
-Open **http://127.0.0.1:8000** in your browser.
-
-The SQLite database (`assistant.db`) is created automatically on first startup and seeded
-with four example notes.
-
----
-
-## Voice Commands
-
-The assistant understands natural language. Examples that have been tested:
-
-**Weather**
-
-```
-"What is the weather in Pune?"
-"What's the temperature in London in Fahrenheit?"
-"How's the weather in Tokyo right now?"
-```
-
-**Reminders**
-
-```
-"Remind me to study tomorrow at 7 PM."
-"Set a reminder to call mom at 6 PM."
-"Remind me to submit the assignment in 30 minutes."
-```
-
-**Notes search**
-
-```
-"Find my note about machine learning."
-"Search my notes for architecture."
-"What's on my grocery list?"
-```
-
-**General conversation**
-
-```
-"Explain gradient descent in one sentence."
-"What is the capital of France?"
-```
-
----
-
-## Real-Time Audio
-
-### Input pipeline (browser -> server)
-
-1. `getUserMedia` acquires the microphone stream with `echoCancellation: true` and
-   `noiseSuppression: true`.
-2. A `ScriptProcessorNode` fires at every 2048-frame buffer boundary.
-3. Float32 samples are resampled to 16 000 Hz and converted to signed 16-bit PCM
-   little-endian (`Int16Array`).
-4. Each PCM buffer is sent as a binary WebSocket frame — no base64, no JSON wrapping.
-
-### Output pipeline (server -> browser)
-
-1. Gemini Live streams response audio as `inline_data` parts inside `server_content`.
-2. The server base64-encodes each chunk and sends a JSON WebSocket message:
-   `{"type": "audio", "data": "<base64>", "mime_type": "audio/pcm;rate=24000", "turn_id": N}`.
-3. The `AudioPlayer` decodes the base64, converts the Int16 PCM bytes to a `Float32Array`,
-   wraps it in an `AudioBuffer`, and schedules it on the `AudioContext` timeline immediately
-   after the previously scheduled chunk — guaranteeing gapless playback across network jitter.
-
----
-
-## Gemini Live API
-
-The session is established with `google.genai.Client.aio.live.connect()` using a
-`types.LiveConnectConfig` that specifies:
-
-- **Response modalities:** `AUDIO` (the model responds with spoken audio, not text)
-- **Speech config:** `PrebuiltVoiceConfig` (voice name from `GEMINI_VOICE_NAME`)
-- **System instruction:** natural-language prompt tuned for concise spoken output
-- **Tools:** all three `FunctionDeclaration` objects from the `ToolRegistry`
-- **Transcription:** `AudioTranscriptionConfig()` on both input and output
-
-The connection is lazy — it is created the first time the browser sends an audio chunk or
-text message, not at WebSocket handshake time. This avoids wasting quota for idle connections.
-
----
-
-## Tool Calling
-
-Three tools are registered in `app/tools/registry.py`:
-
-| Tool              | Trigger phrase (example)       | Backend                         |
-|-------------------|--------------------------------|---------------------------------|
-| `get_weather`     | "weather in Pune"              | Open-Meteo geocoding + forecast |
-| `create_reminder` | "remind me to..."              | SQLite `reminders` table        |
-| `search_notes`    | "find my note about..."        | SQLite `notes` table (LIKE)     |
-
-### How it works
-
-1. Gemini decides to call a tool and sends a `tool_call` message to the server.
-2. `VoiceSession._process_gemini_message()` receives it and passes all `function_calls` to
-   `ToolExecutor.execute_calls()`.
-3. `execute_calls()` deduplicates calls by ID, then runs all unique calls concurrently with
-   `asyncio.gather()`.
-4. Each result is returned to Gemini via `session.send_tool_response()`.
-5. Gemini incorporates the tool result into its spoken answer.
-
-Tool calls are also forwarded to the browser as `{"type": "tool_call", ...}` and
-`{"type": "tool_result", ...}` messages, which are displayed in the Tool Activity Banner.
-
----
-
-## Barge-In
-
-Users can interrupt the assistant mid-sentence in two ways:
-
-1. **Client-side:** The user clicks "Stop Speaking" or the browser sends an `interrupt` JSON
-   message. The session increments `turn_id` and sends `{"type": "interrupted", ...}` back.
-2. **Server-side:** Gemini Live itself sends a `server_content.interrupted = True` signal when
-   it detects user speech overlapping the assistant's response.
-
-In both cases, the `AudioPlayer` receives the new `turn_id` and stops scheduling any in-flight
-audio chunks that belonged to the previous turn, achieving sub-20 ms cut-off latency.
-
----
-
-## Latency
-
-Observed in practice on a standard broadband connection:
-
-| Stage                             | Typical latency                         |
-|-----------------------------------|-----------------------------------------|
-| Mic -> server (WebSocket frame)   | < 10 ms                                 |
-| First audio token from Gemini     | 400-800 ms after end of speech          |
-| Audio player first sound          | < 20 ms after first chunk arrives       |
-| Tool call round-trip (weather)    | 300-600 ms (Open-Meteo API latency)     |
-
-These figures reflect real usage and will vary by network and Gemini service load.
-
----
-
-## Error Handling
-
-| Scenario                        | Behaviour                                                            |
-|---------------------------------|----------------------------------------------------------------------|
-| Missing `GEMINI_API_KEY`        | `GeminiConfigError` caught, structured error sent to browser         |
-| Gemini connection failure       | `GeminiConnectionError` caught, browser notified, session closed     |
-| Invalid weather city            | Returns `{"status": "error", "error": "City '...' not found."}`      |
-| Empty or invalid unit string    | Returns `{"status": "error", "error": "Invalid unit '...'."}`        |
-| SQLite write failure            | Returns `{"status": "error", "error": "Database error: ..."}`        |
-| Duplicate tool call ID          | Silently skipped at both session and executor level                  |
-| Malformed WebSocket JSON        | `ValueError` caught, error status sent, session continues            |
-| API key in error message        | Regex redaction replaces key with `[REDACTED_KEY]`                   |
-| Browser disconnect              | `WebSocketDisconnect` caught, session cleaned up gracefully          |
-
----
-
-## Testing
-
-### Running all tests
-
-```bash
-# Activate the virtual environment first
-pytest
-```
-
-### Test categories
-
-**Unit tests** (no network, no real DB) — run by default:
-
-```bash
-pytest -m "not integration"
-```
-
-**Integration tests** (live network, real Open-Meteo API):
-
-```bash
-# Requires WEATHER_API_KEY to be set in .env
-pytest -m integration
-```
-
-### Test summary
-
-| Test file                 | Tests | What is covered                                                   |
-|---------------------------|-------|-------------------------------------------------------------------|
-| `test_backend.py`         | 74    | Health endpoint, registry, weather (mocked), reminders, notes, DB isolation, lazy OpenAI, CORS |
-| `test_tools.py`           | 20    | Tool schemas, parameter validation, batch execution, session dispatch |
-| `test_session_manager.py` | 17    | WebSocket lifecycle, ping/pong, audio, text, interruption, error recovery |
-| `test_reliability.py`     | 9     | API key redaction, dedup, malformed JSON, session teardown        |
-| `test_gemini_client.py`   | 7     | Config validation, key check, connection error handling           |
-| **Total**                 | **127** |                                                                 |
-
-All 127 tests pass cleanly. Unit tests require no API keys or network access. Integration tests
-can be run explicitly with `pytest -m integration`.
-
----
-
-## Deployment Architecture (Vercel + Render)
-
-The application utilizes a split production deployment architecture:
+## Project layout
 
 ```text
-                    USER BROWSER
-                     |        |
-         Static HTTP |        | Persistent WebSocket (wss://)
-                     v        |
-              +-------------+ |
-              |   VERCEL    | |
-              |  FRONTEND   | | (Pure static assets: HTML, CSS, JS)
-              +-------------+ |
-                              v
-                       +-------------+
-                       |   RENDER    |
-                       |   BACKEND   | (FastAPI + WebSockets)
-                       |  PORT 10000 |
-                       +------+------+
-                              |
-       +----------------------+----------------------+
-       |                      |                      |
-       v                      v                      v
-Google Gemini Live       Callable Tools        SQLite Database
- (Audio streaming)      (Weather/Remind/Notes)   (assistant.db)
+app/
+  main.py                     FastAPI routes, validation, CORS
+  database/
+    mongodb.py                Authenticated user data
+    database.py               Legacy SQLite test/local fallback
+  services/
+    auth.py                   JWT and password helpers
+    gemini_client.py          Gemini Live SDK wrapper
+    google_oauth.py           Google ID-token verification
+    rate_limiter.py           Process-local sliding-window limiter
+    session_manager.py        WebSocket lifecycle and persistence
+    tool_executor.py          Concurrent function dispatch
+    voice_pipeline.py         Deprecated authenticated OpenAI REST flow
+  tools/                      Weather, reminder, and note tools
+public/                       Canonical Vercel frontend
+tests/                        Unit, reliability, and opt-in integration tests
+render.yaml                   Render Blueprint
+vercel.json                   Vercel static deployment
 ```
 
-### Why This Architecture?
-- **Vercel** is an edge CDN optimized for lightning-fast delivery of static frontend assets (`index.html`, `style.css`, `app.js`). Vercel Serverless Functions have 15-second to 60-second timeouts, missing audio dependencies, and do **not** support persistent bidirectional WebSockets. Attempting to deploy the Python backend to Vercel causes `500: FUNCTION_INVOCATION_FAILED`.
-- **Render** runs a dedicated persistent Python container that hosts FastAPI, maintains long-lived bidirectional WebSockets with clients, manages real-time PCM audio streaming with the Google Gemini Live API, and executes backend tools with SQLite.
+## Local setup
 
----
+Requires Python 3.11 or newer, MongoDB, and a Gemini API key.
 
-### 1. Render Deployment (Backend Only)
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+Copy-Item .env.example .env
+uvicorn app.main:app --reload --port 10000
+```
 
-The backend is configured via [render.yaml](file:///d:/Real%20time%20voice%20assistant/render.yaml):
-- **Runtime:** `python`
-- **Build Command:** `pip install -r requirements.txt`
-- **Start Command:** `uvicorn app.main:app --host 0.0.0.0 --port ${PORT:-10000}`
-- **Health Check Path:** `/health` (returns `{"status": "ok"}`)
-- **Live URL:** `https://real-time-voice-assistant-9bh1.onrender.com`
-- **WebSocket Route:** `wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice`
+Serve the `public/` directory from a local static server. Local ports 8000, 10000, 3000, and 5173 are allowed by the backend CORS configuration.
 
-#### Render Environment Variables
-Configure these in the Render Dashboard (**Service** > **Environment**):
-- `GEMINI_API_KEY`: Your Google Gemini API key (private secret).
-- `GEMINI_LIVE_MODEL`: `gemini-2.5-flash-native-audio-latest`
-- `GEMINI_VOICE_NAME`: `Puck`
-- `WEATHER_API_PROVIDER`: `open-meteo`
-- `WEATHER_API_KEY`: `open-meteo`
-- `FRONTEND_URL`: Optional custom Vercel domain (e.g. `https://your-app.vercel.app`) to permit via CORS.
+## Configuration
 
----
+Keep all secrets in `.env` locally and in Render environment variables in production.
 
-### 2. Vercel Deployment (Frontend Only)
+| Variable | Purpose | Required |
+|---|---|---|
+| `GEMINI_API_KEY` | Gemini Live access | Yes |
+| `GEMINI_LIVE_MODEL` | Live model override | No |
+| `GEMINI_VOICE_NAME` | Spoken voice | No |
+| `MONGODB_URI` | Users, history, reminders, notes | Yes |
+| `MONGODB_DB_NAME` | MongoDB database name | No |
+| `JWT_SECRET` | Signs access tokens | Yes |
+| `JWT_EXPIRE_MINUTES` | Token lifetime | No |
+| `GOOGLE_CLIENT_ID` | Google Sign-In | For Google login |
+| `FRONTEND_URL` | Additional exact CORS origin | In production |
+| `WEATHER_API_KEY` | Use `open-meteo` for the configured provider | Yes |
+| `OPENAI_API_KEY` | Deprecated REST text/voice endpoints | Optional |
 
-- **Live Frontend URL:** [https://real-time-voice-assistant-lovat.vercel.app](https://real-time-voice-assistant-lovat.vercel.app)
+`render.yaml` declares the production variables. Values marked `sync: false` must be entered in Render and are never committed.
 
-The frontend is configured via [vercel.json](file:///d:/Real%20time%20voice%20assistant/vercel.json):
+## API overview
+
+Public endpoints:
+
+- `GET /health` — lightweight liveness check
+- `GET /ready` — sanitized database readiness
+- `POST /api/auth/register`
+- `POST /api/auth/login`
+- `POST /api/auth/google`
+
+Bearer-authenticated endpoints:
+
+- `GET /api/auth/me`
+- `GET|POST /api/conversations`
+- `GET /api/conversations/{id}/messages`
+- `DELETE /api/conversations/{id}/messages`
+- `GET|POST /api/reminders`
+- `POST /api/text` and `POST /api/voice` — deprecated OpenAI fallback
+- `GET /api/audio/{filename}`
+
+For `/ws/voice`, connect without credentials in the URL, wait for `connected`, then send:
+
 ```json
 {
-  "framework": null,
-  "cleanUrls": true,
-  "rewrites": [
-    {
-      "source": "/static/:path*",
-      "destination": "/:path*"
-    }
-  ]
+  "type": "auth",
+  "token": "<JWT>",
+  "conversation_id": "<MongoDB conversation id>"
 }
 ```
 
-#### Vercel Dashboard Project Settings:
-1. **Framework Preset:** `Other` (Static Site / framework: null)
-2. **Root Directory:** `./` (default root)
-3. **Build Command:** Leave empty / disabled (pure static HTML/CSS/JS)
-4. **Output Directory:** Leave default
-5. **Install Command:** Leave empty / disabled
-6. **Environment Variables:** No private secrets required!
+Do not send audio or prompts until the server returns `authenticated`.
 
----
+## Tests
 
-### 3. Frontend-to-Backend Communication
-- **Centralized Configuration:** [app/static/app.js](file:///d:/Real%20time%20voice%20assistant/app/static/app.js) contains a centralized `CONFIG` object.
-  - When accessed on `*.vercel.app`, the frontend automatically points API requests to `https://real-time-voice-assistant-9bh1.onrender.com` and WebSockets to `wss://real-time-voice-assistant-9bh1.onrender.com/ws/voice`.
-  - When accessed on `localhost` / `127.0.0.1`, it automatically connects to the local development server.
-- **CORS Support:** FastAPI in [app/main.py](file:///d:/Real%20time%20voice%20assistant/app/main.py) includes `CORSMiddleware` permitting all `https://*.vercel.app` domains, Render, and local development origins for `GET`, `POST`, and `OPTIONS` preflight requests.
+Run deterministic tests without external services:
 
----
+```powershell
+pytest -m "not integration"
+```
 
-## Known Limitations
+Run opt-in live API tests only with valid test credentials and isolated data:
 
-1. **Ephemeral SQLite storage on Render free tier.** `assistant.db` is stored on the local container filesystem. On Render free instances, the filesystem is ephemeral and resets if the service is redeployed or restarts after idling. For permanent persistence across restarts, an external database (e.g. PostgreSQL) or persistent disk can be attached.
+```powershell
+pytest -m integration
+```
 
-2. **WebSockets unsupported on Vercel.** Vercel Edge/Serverless does not support persistent stateful WebSockets, which is why the backend must be hosted on Render.
+The normal suite mocks network failures and redirects legacy SQLite writes to temporary databases. `.env`, `*.db`, virtual environments, caches, and Vercel local state are ignored by Git.
 
-3. **Reminders are not scheduled.** `create_reminder` stores the title and time string in
-   SQLite, but there is no background scheduler or push notification mechanism. The stored
-   time is a human-readable string (e.g. "tomorrow at 7 PM"), not a parsed `datetime`.
+## Production notes
 
-4. **Notes search is a simple SQL LIKE match.** It is case-insensitive keyword matching, not
-   semantic or full-text search. Complex or misspelled queries may return no results.
-
-5. **No multi-user isolation.** The server supports multiple concurrent WebSocket sessions
-   (each gets its own `VoiceSession` instance), but there is no user authentication,
-   session persistence, or per-user database partitioning.
-
-6. **No wake-word detection.** The user must click "Start Speaking" to begin a session.
-   There is no always-listening or hot-word activation.
-
-7. **OpenAI pipeline (`/api/text`, `/api/voice`) requires its own API key.** These legacy
-   HTTP endpoints use the OpenAI SDK. They are unrelated to the Gemini Live session and do
-   not need to be configured if only the voice assistant is used.
-
-8. **Browser audio constraints are advisory.** Echo cancellation and noise suppression are
-   requested but cannot be guaranteed — the browser and OS audio stack may override them.
-
----
-
-## Stretch Goal — Wake-Word Detection
-
-Wake-word detection is **not implemented** in this project.
-
-The intended design would be:
-
-- Load a lightweight keyword-spotting model (e.g. Porcupine or an ONNX model) in a Web
-  Worker so it runs off the main thread.
-- Keep the microphone open continuously, passing 16 kHz PCM frames to the model.
-- When the wake phrase is detected, begin forwarding audio to the WebSocket server.
-
-This would require browser autoplay policy handling (the `AudioContext` must be resumed after
-a user gesture, which conflicts with always-on listening) and is left as a future extension.
-
----
-
-## AI Coding Assistant Usage
-
-This project was built with significant AI coding assistance throughout all steps.
-
-Specifically:
-
-- **Architecture design and boilerplate** — FastAPI app scaffold, WebSocket handler
-  structure, and database schema were drafted with AI assistance.
-- **Deployment Architecture Fix** — Resolved Vercel `500 FUNCTION_INVOCATION_FAILED` by decoupling
-  static frontend delivery from the persistent Python WebSocket backend on Render, implementing
-  CORS middleware and centralized frontend URL routing.
-- **`gemini_client.py` and `session_manager.py`** — the connection lifecycle, lazy
-  initialisation pattern, and message routing logic were developed iteratively with AI.
-- **`AudioStreamer` and `AudioPlayer`** (JavaScript) — the PCM resampling algorithm,
-  gapless scheduling logic, echo suppression, and barge-in cut-off mechanism were written with AI assistance.
-- **Test suite** (`test_backend.py`, `test_reliability.py`, `test_session_manager.py`) —
-  all 127 unit tests were created with AI assistance and verified by executing pytest.
-- **`weather.py` unit-validation fix** — the empty-string silent-coercion bug (`unit or "celsius"`)
-  was identified and fixed with AI assistance.
-- **README** (this file) — written with AI assistance based on reading and verifying actual source code.
-
-Code was not blindly accepted: every generated piece was read, run, and verified against
-actual test output before being committed to the project.
+- The included rate limiter is process-local. Use a shared gateway or Redis-backed limiter when scaling to multiple workers or instances.
+- WebSocket JWTs are carried in the first message to avoid leaking them through URL logs.
+- Only explicit frontend origins receive CORS access; add preview origins deliberately through configuration instead of accepting every `*.vercel.app` domain.
+- Notes created before the MongoDB migration are not automatically copied from the legacy SQLite database.

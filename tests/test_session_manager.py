@@ -2,6 +2,7 @@
 
 import asyncio
 import base64
+import importlib
 import pytest
 from fastapi.testclient import TestClient
 from google.genai import types
@@ -10,6 +11,27 @@ import json
 
 from app.main import app
 from app.services.session_manager import VoiceSession, session_manager, validate_message
+
+
+@pytest.fixture(autouse=True)
+def mock_websocket_authentication(monkeypatch):
+    async def fake_authenticate(self, token, conversation_id=None):
+        if token != "test-token":
+            raise ValueError("Invalid or expired authentication token.")
+        self.user_id = "test-user"
+        self.user_email = "test@example.com"
+        self.conversation_id = conversation_id or "test-conversation"
+        await self.send_status("authenticated", conversation={"id": self.conversation_id})
+
+    monkeypatch.setattr(VoiceSession, "authenticate", fake_authenticate)
+    session_module = importlib.import_module("app.services.session_manager")
+    monkeypatch.setattr(session_module, "save_message", lambda *args, **kwargs: {"id": "message-1"})
+
+
+def authenticate_websocket(ws):
+    ws.send_json({"type": "auth", "token": "test-token", "conversation_id": "test-conversation"})
+    response = ws.receive_json()
+    assert response["status"] == "authenticated"
 
 
 def test_validate_message_valid():
@@ -62,12 +84,33 @@ def test_websocket_ping_pong():
         assert response["status"] == "pong"
 
 
+def test_websocket_does_not_authenticate_from_query_string():
+    """JWTs in a WebSocket URL are ignored so they cannot leak through access logs."""
+    client = TestClient(app)
+    with client.websocket_connect("/ws/voice?token=test-token&conversation_id=test-conversation") as ws:
+        assert ws.receive_json()["status"] == "connected"
+        ws.send_json({"type": "start_audio"})
+        assert ws.receive_json()["status"] == "auth_required"
+
+
+def test_websocket_rejects_invalid_base64_after_authentication():
+    client = TestClient(app)
+    with client.websocket_connect("/ws/voice") as ws:
+        assert ws.receive_json()["status"] == "connected"
+        authenticate_websocket(ws)
+        ws.send_json({"type": "audio", "data": "not-valid-base64!"})
+        response = ws.receive_json()
+        assert response["status"] == "error"
+        assert "base64" in response["message"].lower()
+
+
 def test_websocket_start_and_stop_audio_lifecycle():
     """Test start_audio and stop_audio control messages."""
     client = TestClient(app)
 
     with client.websocket_connect("/ws/voice") as ws:
         _ = ws.receive_json()
+        authenticate_websocket(ws)
 
         ws.send_json({"type": "start_audio"})
         start_res = ws.receive_json()
@@ -89,6 +132,7 @@ def test_websocket_binary_audio_missing_gemini_key(monkeypatch):
 
     with client.websocket_connect("/ws/voice") as ws:
         _ = ws.receive_json()
+        authenticate_websocket(ws)
 
         fake_pcm = b"\x00\x01" * 320
         ws.send_bytes(fake_pcm)
@@ -106,6 +150,7 @@ def test_websocket_base64_audio_missing_gemini_key(monkeypatch):
 
     with client.websocket_connect("/ws/voice") as ws:
         _ = ws.receive_json()
+        authenticate_websocket(ws)
 
         fake_pcm = b"\x00\x02" * 160
         b64_data = base64.b64encode(fake_pcm).decode("utf-8")
@@ -123,6 +168,7 @@ def test_websocket_invalid_message_handling():
 
     with client.websocket_connect("/ws/voice") as ws:
         _ = ws.receive_json()
+        authenticate_websocket(ws)
 
         ws.send_text("this is not a json payload")
         response = ws.receive_json()
@@ -137,6 +183,7 @@ def test_websocket_unsupported_message_type():
 
     with client.websocket_connect("/ws/voice") as ws:
         _ = ws.receive_json()
+        authenticate_websocket(ws)
 
         ws.send_json({"type": "unknown_action"})
         response = ws.receive_json()
@@ -152,6 +199,7 @@ def test_websocket_text_missing_gemini_key(monkeypatch):
 
     with client.websocket_connect("/ws/voice") as ws:
         _ = ws.receive_json()
+        authenticate_websocket(ws)
 
         ws.send_json({"type": "text", "text": "Explain quantum computing."})
         response = ws.receive_json()
@@ -416,6 +464,8 @@ def test_client_interruption_websocket_action():
         assert msg["type"] == "status"
         assert msg["status"] == "connected"
 
+        authenticate_websocket(websocket)
+
         # 2. Send interrupt signal
         websocket.send_text(json.dumps({"type": "interrupt"}))
         resp = websocket.receive_json()
@@ -443,4 +493,3 @@ def test_rapid_multiple_interruptions():
     interrupted_events = [m for m in mock_ws.sent_messages if m["type"] == "interrupted"]
     assert len(interrupted_events) == 3
     assert [m["turn_id"] for m in interrupted_events] == [2, 3, 4]
-

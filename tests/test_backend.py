@@ -796,27 +796,37 @@ class TestOpenAILazyInitialization:
         with pytest.raises(RuntimeError, match="OPENAI_API_KEY is missing"):
             _ = oac.client.audio
 
+    def test_legacy_text_pipeline_requires_authentication(self):
+        from app.main import app
+        client = TestClient(app)
+        response = client.post("/api/text", json={"text": "Hello"})
+        assert response.status_code == 401
+
     def test_text_pipeline_returns_503_when_openai_key_missing(self, monkeypatch):
         """POST /api/text returns HTTP 503 with helpful message when OPENAI_API_KEY is missing."""
         import app.services.openai_client as oac
         monkeypatch.setenv("OPENAI_API_KEY", "")
         oac._client = None
 
-        from app.main import app
+        from app.main import app, current_user
+        app.dependency_overrides[current_user] = lambda: {"id": "test-user"}
         client = TestClient(app)
-        response = client.post("/api/text", json={"text": "Hello"})
-        assert response.status_code == 503
-        assert "OPENAI_API_KEY is missing" in response.json()["detail"]
+        try:
+            response = client.post("/api/text", json={"text": "Hello"})
+            assert response.status_code == 503
+            assert "OPENAI_API_KEY is missing" in response.json()["detail"]
+        finally:
+            app.dependency_overrides.pop(current_user, None)
 
 
 class TestCORSConfiguration:
     """Verify CORS headers for Vercel, Render, and local development origins."""
 
-    def test_cors_preflight_for_vercel_origin(self):
-        """OPTIONS preflight from a Vercel domain receives allowed origin and methods."""
+    def test_cors_preflight_for_production_vercel_origin(self):
+        """OPTIONS preflight from the configured production frontend is allowed."""
         from app.main import app
         client = TestClient(app)
-        origin = "https://voice-assistant-demo.vercel.app"
+        origin = "https://real-time-voice-assistant-lovat.vercel.app"
         response = client.options(
             "/health",
             headers={
@@ -827,14 +837,14 @@ class TestCORSConfiguration:
         assert response.status_code == 200
         assert response.headers.get("access-control-allow-origin") == origin
 
-    def test_cors_get_for_vercel_origin(self):
-        """GET request with Vercel Origin header receives Access-Control-Allow-Origin."""
+    def test_cors_rejects_unconfigured_vercel_preview_origin(self):
+        """Arbitrary Vercel preview deployments do not receive CORS access."""
         from app.main import app
         client = TestClient(app)
         origin = "https://real-time-voice-frontend.vercel.app"
         response = client.get("/health", headers={"Origin": origin})
         assert response.status_code == 200
-        assert response.headers.get("access-control-allow-origin") == origin
+        assert response.headers.get("access-control-allow-origin") is None
 
     def test_cors_for_localhost_origin(self):
         """Localhost origin is permitted for local frontend development."""

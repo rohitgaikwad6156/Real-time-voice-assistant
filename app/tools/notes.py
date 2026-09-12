@@ -1,8 +1,4 @@
-"""SQLite-backed Notes tool implementation.
-
-Provides structured note search functionality with validation and SQLite database queries.
-Independent from any specific LLM client.
-"""
+"""User-scoped MongoDB note search with a legacy SQLite fallback for local tests."""
 
 import logging
 import sqlite3
@@ -14,16 +10,18 @@ from app.database import (
     insert_note,
     search_notes_db,
 )
+from app.database.mongodb import search_user_notes
 
 logger = logging.getLogger(__name__)
 
 
-def search_notes(query: str, limit: int = 5) -> Dict[str, Any]:
-    """Search personal notes stored in the SQLite database matching a query keyword or phrase.
+def search_notes(query: str, limit: int = 5, user_id: Optional[str] = None) -> Dict[str, Any]:
+    """Search authenticated MongoDB notes, or legacy SQLite notes without a user id.
 
     Args:
         query: Keyword or phrase to search for (e.g. "machine learning", "groceries").
         limit: Maximum number of notes to return (default: 5, max: 20).
+        user_id: Authenticated owner id. When omitted, use the local SQLite fallback.
 
     Returns:
         Structured dictionary containing matching note records or error details.
@@ -49,11 +47,15 @@ def search_notes(query: str, limit: int = 5) -> Dict[str, Any]:
 
     clean_query = query.strip()
 
-    # 3. Query SQLite database
+    # 3. Query the authenticated store or the isolated legacy fallback.
     try:
-        init_db()
-        matches = search_notes_db(query=clean_query, limit=limit_val)
-        logger.info("Found %d note(s) in SQLite matching '%s'.", len(matches), clean_query)
+        if user_id:
+            matches = search_user_notes(user_id=user_id, query=clean_query, limit=limit_val)
+            logger.info("Found %d MongoDB note(s) for authenticated user.", len(matches))
+        else:
+            init_db()
+            matches = search_notes_db(query=clean_query, limit=limit_val)
+            logger.info("Found %d note(s) in legacy SQLite search.", len(matches))
 
         count = len(matches)
         summary_text = (

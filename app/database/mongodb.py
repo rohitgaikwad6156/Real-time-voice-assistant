@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 import os
+import re
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
 from bson import ObjectId
 from pymongo import ASCENDING, DESCENDING, MongoClient
 from pymongo.database import Database
+
+
+logger = logging.getLogger(__name__)
 
 
 class DatabaseConfigError(RuntimeError):
@@ -68,6 +73,7 @@ def get_database() -> Database:
         _db.messages.create_index([("conversation_id", ASCENDING), ("created_at", ASCENDING)])
         _db.messages.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
         _db.reminders.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+        _db.notes.create_index([("user_id", ASCENDING), ("updated_at", DESCENDING)])
         _indexes_ready = True
 
     return _db
@@ -81,7 +87,8 @@ def database_status() -> Dict[str, Any]:
         get_database()
         return {"configured": True, "connected": True}
     except Exception as exc:
-        return {"configured": True, "connected": False, "error": str(exc)}
+        logger.warning("MongoDB readiness check failed: %s", type(exc).__name__)
+        return {"configured": True, "connected": False, "error": "Database connection unavailable."}
 
 
 # ----------------------------- Users ---------------------------------
@@ -244,4 +251,28 @@ def create_user_reminder(user_id: str, title: str, remind_at: str) -> Dict[str, 
 def list_user_reminders(user_id: str, limit: int = 100) -> List[Dict[str, Any]]:
     db = get_database()
     cursor = db.reminders.find({"user_id": user_id}).sort("created_at", DESCENDING).limit(max(1, min(limit, 200)))
+    return [_serialize(doc) or {} for doc in cursor]
+
+
+# ------------------------------- Notes --------------------------------
+
+def search_user_notes(user_id: str, query: str, limit: int = 5) -> List[Dict[str, Any]]:
+    """Search only notes owned by ``user_id`` using a case-insensitive literal match."""
+    db = get_database()
+    clean_query = (query or "").strip()
+    if not clean_query:
+        return []
+
+    pattern = re.escape(clean_query)
+    cursor = (
+        db.notes.find({
+            "user_id": user_id,
+            "$or": [
+                {"title": {"$regex": pattern, "$options": "i"}},
+                {"content": {"$regex": pattern, "$options": "i"}},
+            ],
+        })
+        .sort("updated_at", DESCENDING)
+        .limit(max(1, min(limit, 20)))
+    )
     return [_serialize(doc) or {} for doc in cursor]

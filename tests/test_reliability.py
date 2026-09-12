@@ -9,12 +9,32 @@ Tests coverage:
 """
 
 import json
+import importlib
 import os
 import pytest
 from fastapi.testclient import TestClient
 from google.genai import types
 
 from app.main import app
+from app.services.session_manager import VoiceSession
+
+
+@pytest.fixture(autouse=True)
+def mock_websocket_authentication(monkeypatch):
+    async def fake_authenticate(self, token, conversation_id=None):
+        self.user_id = "test-user"
+        self.user_email = "test@example.com"
+        self.conversation_id = conversation_id or "test-conversation"
+        await self.send_status("authenticated", conversation={"id": self.conversation_id})
+
+    monkeypatch.setattr(VoiceSession, "authenticate", fake_authenticate)
+    session_module = importlib.import_module("app.services.session_manager")
+    monkeypatch.setattr(session_module, "save_message", lambda *args, **kwargs: {"id": "message-1"})
+
+
+def authenticate_websocket(websocket):
+    websocket.send_json({"type": "auth", "token": "test-token", "conversation_id": "test-conversation"})
+    assert websocket.receive_json()["status"] == "authenticated"
 from app.services.session_manager import (
     SessionManager,
     VoiceSession,
@@ -157,6 +177,7 @@ def test_websocket_handles_empty_text_gracefully():
     client = TestClient(app)
     with client.websocket_connect("/ws/voice") as websocket:
         websocket.receive_json()  # Handshake
+        authenticate_websocket(websocket)
 
         websocket.send_text(json.dumps({"type": "text", "text": "   "}))
         resp = websocket.receive_json()
@@ -170,6 +191,7 @@ def test_websocket_handles_unsupported_action_gracefully():
     client = TestClient(app)
     with client.websocket_connect("/ws/voice") as websocket:
         websocket.receive_json()
+        authenticate_websocket(websocket)
 
         websocket.send_text(json.dumps({"type": "non_existent_action_xyz"}))
         resp = websocket.receive_json()

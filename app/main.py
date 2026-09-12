@@ -1,13 +1,15 @@
 import logging
 import os
+import re
 import secrets
+from uuid import uuid4
 from pathlib import Path
 from typing import Optional
 
-from fastapi import Depends, FastAPI, File, Header, HTTPException, UploadFile, WebSocket
+from fastapi import Depends, FastAPI, File, Header, HTTPException, Request, UploadFile, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from pydantic import BaseModel, EmailStr
+from pydantic import BaseModel, EmailStr, Field
 from pymongo.errors import DuplicateKeyError
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -27,6 +29,7 @@ from app.database.mongodb import (
 )
 from app.services.auth import create_access_token, decode_access_token, hash_password, verify_password
 from app.services.google_oauth import get_google_client_id, verify_google_credential
+from app.services.rate_limiter import rate_limiter
 from app.services.session_manager import handle_voice_websocket
 from app.services.voice_pipeline import answer_from_text, transcribe_audio, generate_speech
 
@@ -35,11 +38,14 @@ app = FastAPI(title="AI Voice Assistant Backend", version="2.1.0")
 ALLOWED_ORIGINS = [
     "http://localhost:8000",
     "http://127.0.0.1:8000",
+    "http://localhost:10000",
+    "http://127.0.0.1:10000",
     "http://localhost:3000",
     "http://127.0.0.1:3000",
     "http://localhost:5173",
     "http://127.0.0.1:5173",
     "https://real-time-voice-assistant-9bh1.onrender.com",
+    "https://real-time-voice-assistant-lovat.vercel.app",
 ]
 
 custom_frontend = os.getenv("FRONTEND_URL")
@@ -49,39 +55,53 @@ if custom_frontend and custom_frontend not in ALLOWED_ORIGINS:
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
-    allow_origin_regex=r"^https://.*\.vercel\.app$",
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["GET", "POST", "DELETE", "OPTIONS"],
     allow_headers=["*"],
 )
 
 
 class TextRequest(BaseModel):
-    text: str
+    text: str = Field(min_length=1, max_length=10_000)
 
 
 class RegisterRequest(BaseModel):
-    name: str
+    name: str = Field(min_length=1, max_length=100)
     email: EmailStr
-    password: str
+    password: str = Field(min_length=6, max_length=128)
 
 
 class LoginRequest(BaseModel):
     email: EmailStr
-    password: str
+    password: str = Field(min_length=1, max_length=128)
 
 
 class GoogleAuthRequest(BaseModel):
-    credential: str
+    credential: str = Field(min_length=1, max_length=10_000)
 
 
 class ConversationRequest(BaseModel):
-    title: Optional[str] = "New conversation"
+    title: Optional[str] = Field(default="New conversation", max_length=80)
 
 
 class ReminderRequest(BaseModel):
-    title: str
-    remind_at: str
+    title: str = Field(min_length=1, max_length=200)
+    remind_at: str = Field(min_length=1, max_length=200)
+
+
+MAX_AUDIO_UPLOAD_BYTES = 15 * 1024 * 1024
+SAFE_AUDIO_FILENAME = re.compile(r"^[0-9a-f]{32}\.mp3$")
+
+
+def enforce_rate_limit(request: Request, scope: str, limit: int, window_seconds: int) -> None:
+    client_host = request.client.host if request.client else "unknown"
+    allowed, retry_after = rate_limiter.check(f"{scope}:{client_host}", limit, window_seconds)
+    if not allowed:
+        raise HTTPException(
+            status_code=429,
+            detail="Too many requests. Please try again shortly.",
+            headers={"Retry-After": str(retry_after or 1)},
+        )
 
 
 def current_user(authorization: Optional[str] = Header(default=None)):
@@ -124,7 +144,8 @@ def ready():
 
 
 @app.post("/api/auth/register")
-def register(request: RegisterRequest):
+def register(request: RegisterRequest, http_request: Request):
+    enforce_rate_limit(http_request, "register", 10, 60)
     name = request.name.strip()
     password = request.password
     if len(name) < 2:
@@ -144,7 +165,8 @@ def register(request: RegisterRequest):
 
 
 @app.post("/api/auth/login")
-def login(request: LoginRequest):
+def login(request: LoginRequest, http_request: Request):
+    enforce_rate_limit(http_request, "login", 20, 60)
     try:
         user = get_user_by_email(str(request.email), include_password=True)
     except DatabaseConfigError as exc:
@@ -169,7 +191,8 @@ def google_auth_config():
 
 
 @app.post("/api/auth/google")
-def google_login(request: GoogleAuthRequest):
+def google_login(request: GoogleAuthRequest, http_request: Request):
+    enforce_rate_limit(http_request, "google-login", 20, 60)
     try:
         profile = verify_google_credential(request.credential)
     except RuntimeError as exc:
@@ -252,7 +275,8 @@ async def voice_websocket_endpoint(websocket: WebSocket):
 
 
 @app.post("/api/text")
-def text_pipeline(request: TextRequest):
+def text_pipeline(request: TextRequest, http_request: Request, user=Depends(current_user)):
+    enforce_rate_limit(http_request, f"legacy-text:{user['id']}", 20, 60)
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="Please enter some text.")
@@ -265,14 +289,27 @@ def text_pipeline(request: TextRequest):
 
 
 @app.post("/api/voice")
-async def voice_pipeline(audio: UploadFile = File(...)):
+async def voice_pipeline(
+    http_request: Request,
+    audio: UploadFile = File(...),
+    user=Depends(current_user),
+):
+    enforce_rate_limit(http_request, f"legacy-voice:{user['id']}", 10, 60)
     if not audio.filename:
         raise HTTPException(status_code=400, detail="Audio file is required.")
-    suffix = Path(audio.filename).suffix or ".webm"
-    temp = Path("data") / f"input{suffix}"
+    suffix = Path(audio.filename).suffix.lower()
+    if suffix not in {".webm", ".wav", ".mp3", ".m4a", ".ogg"}:
+        suffix = ".webm"
+    temp = Path("data") / f"input-{uuid4().hex}{suffix}"
     temp.parent.mkdir(exist_ok=True)
     try:
-        temp.write_bytes(await audio.read())
+        total = 0
+        with temp.open("wb") as output:
+            while chunk := await audio.read(1024 * 1024):
+                total += len(chunk)
+                if total > MAX_AUDIO_UPLOAD_BYTES:
+                    raise HTTPException(status_code=413, detail="Audio upload exceeds the 15 MB limit.")
+                output.write(chunk)
         transcript = transcribe_audio(temp)
         answer = answer_from_text(transcript)
         output = generate_speech(answer)
@@ -284,7 +321,9 @@ async def voice_pipeline(audio: UploadFile = File(...)):
 
 
 @app.get("/api/audio/{filename}")
-def get_audio(filename: str):
+def get_audio(filename: str, user=Depends(current_user)):
+    if not SAFE_AUDIO_FILENAME.fullmatch(filename):
+        raise HTTPException(status_code=404, detail="Audio not found.")
     path = Path("data/audio") / filename
     if not path.exists():
         raise HTTPException(status_code=404, detail="Audio not found.")

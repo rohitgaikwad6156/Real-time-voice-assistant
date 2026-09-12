@@ -181,6 +181,22 @@ def test_search_notes_invalid_limit_returns_error():
     assert "limit" in result["error"].lower()
 
 
+def test_authenticated_notes_search_is_scoped_to_user(monkeypatch):
+    """Authenticated searches use MongoDB with the caller's user id, not shared SQLite."""
+    captured = {}
+
+    def fake_search_user_notes(user_id, query, limit):
+        captured.update(user_id=user_id, query=query, limit=limit)
+        return [{"id": "note-1", "title": "Private", "content": "Private note"}]
+
+    monkeypatch.setattr("app.tools.notes.search_user_notes", fake_search_user_notes)
+    result = search_notes(query="private", limit=3, user_id="user-123")
+
+    assert result["status"] == "success"
+    assert captured == {"user_id": "user-123", "query": "private", "limit": 3}
+    assert result["notes"][0]["id"] == "note-1"
+
+
 # ==============================================================================
 # 4. Tool Registry Tests
 # ==============================================================================

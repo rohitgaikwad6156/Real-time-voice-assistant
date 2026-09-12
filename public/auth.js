@@ -51,14 +51,11 @@
   }
 
   function configureAuthenticatedWebSocket(token, conversationId) {
-    const params = new URLSearchParams({
-      token,
-      conversation_id: conversationId,
-    });
-
     window.APP_CONFIG = {
       API_URL: BACKEND,
-      WS_URL: `${BACKEND.replace(/^http/, "ws")}/ws/voice?${params.toString()}`,
+      WS_URL: `${BACKEND.replace(/^http/, "ws")}/ws/voice`,
+      AUTH_TOKEN: token,
+      CONVERSATION_ID: conversationId,
     };
   }
 
@@ -224,6 +221,12 @@
       }
     };
   }
+
+  window.VOICE_HANDLE_AUTH_FAILURE = (message = "Your session expired. Please log in again.") => {
+    clearStoredSession();
+    showAuth(message);
+    updateStartupStatus("Sign in to start assistant");
+  };
 
   async function showReminders() {
     try {
