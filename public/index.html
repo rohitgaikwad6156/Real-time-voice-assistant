@@ -164,11 +164,11 @@
           updateStartupUI("Checking account...");
 
           // Authentication loads immediately. It no longer waits for /health.
-          await loadScriptOnce("voice-auth-script", "/auth.js?v=2.1");
+          await loadScriptOnce("voice-auth-script", "/auth.js?v=2.2");
 
-          // Google sign-in is an enhancement to the login overlay. A Google
-          // script/config issue must never block normal email/password login.
-          loadScriptOnce("voice-google-auth-script", "/google-auth.js?v=1.0")
+          // Supabase Google sign-in enhances the login overlay without blocking
+          // the existing email/password path when its configuration is unavailable.
+          loadScriptOnce("voice-supabase-auth-script", "/supabase-auth.js?v=1.0")
             .catch((error) => console.warn("[Startup] Google auth UI unavailable:", error));
 
           if (!window.VOICE_AUTH_READY) {

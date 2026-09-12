@@ -28,9 +28,13 @@ from app.database.mongodb import (
     list_user_reminders,
 )
 from app.services.auth import create_access_token, decode_access_token, hash_password, verify_password
-from app.services.google_oauth import get_google_client_id, verify_google_credential
 from app.services.rate_limiter import rate_limiter
 from app.services.session_manager import handle_voice_websocket
+from app.services.supabase_auth import (
+    SupabaseAuthConfigError,
+    get_supabase_public_config,
+    verify_supabase_google_access_token,
+)
 from app.services.voice_pipeline import answer_from_text, transcribe_audio, generate_speech
 
 app = FastAPI(title="AI Voice Assistant Backend", version="2.1.0")
@@ -76,8 +80,8 @@ class LoginRequest(BaseModel):
     password: str = Field(min_length=1, max_length=128)
 
 
-class GoogleAuthRequest(BaseModel):
-    credential: str = Field(min_length=1, max_length=10_000)
+class SupabaseAuthRequest(BaseModel):
+    access_token: str = Field(min_length=1, max_length=10_000)
 
 
 class ConversationRequest(BaseModel):
@@ -181,30 +185,32 @@ def login(request: LoginRequest, http_request: Request):
     return {"access_token": token, "token_type": "bearer", "user": public_user}
 
 
-@app.get("/api/auth/google/config")
-def google_auth_config():
-    client_id = get_google_client_id()
-    return {
-        "enabled": bool(client_id),
-        "client_id": client_id or None,
-    }
-
-
-@app.post("/api/auth/google")
-def google_login(request: GoogleAuthRequest, http_request: Request):
-    enforce_rate_limit(http_request, "google-login", 20, 60)
+@app.get("/api/auth/supabase/config")
+def supabase_auth_config():
     try:
-        profile = verify_google_credential(request.credential)
-    except RuntimeError as exc:
+        config = get_supabase_public_config()
+        return {"enabled": True, **config}
+    except SupabaseAuthConfigError:
+        return {"enabled": False, "url": None, "publishable_key": None}
+
+
+@app.post("/api/auth/supabase")
+def supabase_login(request: SupabaseAuthRequest, http_request: Request):
+    enforce_rate_limit(http_request, "supabase-login", 20, 60)
+    try:
+        profile = verify_supabase_google_access_token(request.access_token)
+    except SupabaseAuthConfigError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from exc
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
     try:
         user = get_user_by_email(profile["email"])
         if not user:
             try:
-                # Google users do not need a usable password. Store an unknown,
+                # Supabase Google users do not need a usable local password. Store an unknown,
                 # random bcrypt hash so password login cannot be used accidentally.
                 random_password = secrets.token_urlsafe(48)
                 user = create_user(
@@ -217,7 +223,7 @@ def google_login(request: GoogleAuthRequest, http_request: Request):
                 user = get_user_by_email(profile["email"])
 
         if not user:
-            raise HTTPException(status_code=500, detail="Could not create Google account.")
+            raise HTTPException(status_code=500, detail="Could not create Supabase account.")
 
         token = create_access_token(user["id"], user["email"])
         return {"access_token": token, "token_type": "bearer", "user": user}

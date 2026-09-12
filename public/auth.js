@@ -209,6 +209,9 @@
           auth: false,
         });
 
+        if (typeof window.VOICE_SUPABASE_SIGN_OUT === "function") {
+          await window.VOICE_SUPABASE_SIGN_OUT();
+        }
         localStorage.setItem(TOKEN_KEY, result.access_token);
         localStorage.setItem(USER_KEY, JSON.stringify(result.user));
         localStorage.removeItem(CONVERSATION_KEY);
@@ -481,7 +484,10 @@
     };
 
     sidebar.querySelector(".history-reminders").onclick = showReminders;
-    sidebar.querySelector(".history-logout").onclick = () => {
+    sidebar.querySelector(".history-logout").onclick = async () => {
+      if (typeof window.VOICE_SUPABASE_SIGN_OUT === "function") {
+        await window.VOICE_SUPABASE_SIGN_OUT();
+      }
       clearStoredSession();
       location.reload();
     };
