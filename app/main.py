@@ -1,5 +1,6 @@
 import logging
 import os
+import secrets
 from pathlib import Path
 from typing import Optional
 
@@ -25,10 +26,11 @@ from app.database.mongodb import (
     list_user_reminders,
 )
 from app.services.auth import create_access_token, decode_access_token, hash_password, verify_password
+from app.services.google_oauth import get_google_client_id, verify_google_credential
 from app.services.session_manager import handle_voice_websocket
 from app.services.voice_pipeline import answer_from_text, transcribe_audio, generate_speech
 
-app = FastAPI(title="AI Voice Assistant Backend", version="2.0.0")
+app = FastAPI(title="AI Voice Assistant Backend", version="2.1.0")
 
 ALLOWED_ORIGINS = [
     "http://localhost:8000",
@@ -69,6 +71,10 @@ class LoginRequest(BaseModel):
     password: str
 
 
+class GoogleAuthRequest(BaseModel):
+    credential: str
+
+
 class ConversationRequest(BaseModel):
     title: Optional[str] = "New conversation"
 
@@ -99,6 +105,7 @@ def home():
         "service": "Real-Time Voice Assistant Backend",
         "frontend": custom_frontend or "Vercel frontend",
         "health": "/health",
+        "ready": "/ready",
         "api": "/api",
         "websocket": "/ws/voice",
     }
@@ -106,6 +113,13 @@ def home():
 
 @app.get("/health")
 def health():
+    # Keep this endpoint intentionally lightweight so Render cold-start polling
+    # does not also block on the first MongoDB connection.
+    return {"status": "ok"}
+
+
+@app.get("/ready")
+def ready():
     return {"status": "ok", "database": database_status()}
 
 
@@ -135,11 +149,57 @@ def login(request: LoginRequest):
         user = get_user_by_email(str(request.email), include_password=True)
     except DatabaseConfigError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
-    if not user or not verify_password(request.password, user.get("password_hash", "")):
+
+    password_hash = user.get("password_hash", "") if user else ""
+    if not user or not password_hash or not verify_password(request.password, password_hash):
         raise HTTPException(status_code=401, detail="Incorrect email or password.")
+
     public_user = {k: v for k, v in user.items() if k != "password_hash"}
     token = create_access_token(public_user["id"], public_user["email"])
     return {"access_token": token, "token_type": "bearer", "user": public_user}
+
+
+@app.get("/api/auth/google/config")
+def google_auth_config():
+    client_id = get_google_client_id()
+    return {
+        "enabled": bool(client_id),
+        "client_id": client_id or None,
+    }
+
+
+@app.post("/api/auth/google")
+def google_login(request: GoogleAuthRequest):
+    try:
+        profile = verify_google_credential(request.credential)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from exc
+
+    try:
+        user = get_user_by_email(profile["email"])
+        if not user:
+            try:
+                # Google users do not need a usable password. Store an unknown,
+                # random bcrypt hash so password login cannot be used accidentally.
+                random_password = secrets.token_urlsafe(48)
+                user = create_user(
+                    profile["name"],
+                    profile["email"],
+                    hash_password(random_password),
+                )
+            except DuplicateKeyError:
+                # Another request may have created the same verified email first.
+                user = get_user_by_email(profile["email"])
+
+        if not user:
+            raise HTTPException(status_code=500, detail="Could not create Google account.")
+
+        token = create_access_token(user["id"], user["email"])
+        return {"access_token": token, "token_type": "bearer", "user": user}
+    except DatabaseConfigError as exc:
+        raise HTTPException(status_code=503, detail=str(exc)) from exc
 
 
 @app.get("/api/auth/me")
