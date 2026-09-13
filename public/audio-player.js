@@ -1,49 +1,71 @@
 /**
- * AudioPlayer: Progressive PCM Audio Streaming Player
- * 
+ * AudioPlayer: resilient progressive PCM audio streaming player.
+ *
  * Designed for Gemini Live API audio output (24,000 Hz, 16-bit linear PCM little-endian).
- * 
- * Features:
- * - Progressive streaming: plays audio immediately as chunks arrive with zero batch waiting
- * - Strict chunk ordering: schedules sequential chunks contiguously on the AudioContext timeline
- * - Jitter & Underflow compensation: handles network timing variations cleanly
- * - Overlap prevention: guarantees chunk N+1 begins exactly when chunk N finishes
- * - Graceful cleanup: tracks active nodes so playback can be stopped and cleared instantly
- * - Malformed / empty chunk rejection: validates chunk integrity and byte boundaries
- * - AudioContext resource management: manages lifecycle and handles browser autoplay policies
+ * The player keeps a small playout cushion so normal WebSocket/network jitter does not
+ * create gaps between tiny PCM chunks. If a true underrun happens, it briefly re-buffers
+ * instead of repeatedly restarting audio every few milliseconds.
  */
 
 class AudioPlayer {
   /**
    * @param {Object} options
-   * @param {number} [options.sampleRate=24000] Audio sample rate in Hz (default: 24000 for Gemini Live).
-   * @param {number} [options.channels=1] Number of audio channels (default: 1 mono).
-   * @param {function(): void} [options.onPlaybackStarted] Callback when playback begins.
-   * @param {function(): void} [options.onPlaybackEnded] Callback when all scheduled audio finishes.
+   * @param {number} [options.sampleRate=24000] Source PCM sample rate.
+   * @param {number} [options.channels=1] Number of output channels.
+   * @param {number} [options.startupBufferSeconds=0.14] Initial playout cushion.
+   * @param {number} [options.rebufferSeconds=0.09] Cushion used after a real underrun.
+   * @param {number} [options.underrunThresholdSeconds=0.012] Minimum safe scheduled lead.
+   * @param {number} [options.idleGraceMs=280] Grace period before declaring playback idle.
+   * @param {function(): void} [options.onPlaybackStarted]
+   * @param {function(): void} [options.onPlaybackEnded]
    */
   constructor(options = {}) {
     this.sampleRate = options.sampleRate || 24000;
     this.channels = options.channels || 1;
+
+    this.startupBufferSeconds = Number.isFinite(options.startupBufferSeconds)
+      ? options.startupBufferSeconds
+      : 0.14;
+    this.rebufferSeconds = Number.isFinite(options.rebufferSeconds)
+      ? options.rebufferSeconds
+      : 0.09;
+    this.underrunThresholdSeconds = Number.isFinite(options.underrunThresholdSeconds)
+      ? options.underrunThresholdSeconds
+      : 0.012;
+    this.idleGraceMs = Number.isFinite(options.idleGraceMs)
+      ? options.idleGraceMs
+      : 280;
+
     this.audioContext = null;
     this.nextPlayTime = 0;
     this.activeSources = new Set();
     this.isPlaying = false;
-    this.cancelledTurnIds = new Set();
+
+    // Cancellation entries expire automatically. This prevents a turn ID reused after
+    // a reconnect from being muted forever.
+    this.cancelledTurnIds = new Map();
+    this.currentTurnId = null;
+
     this.onPlaybackStarted = options.onPlaybackStarted || null;
     this.onPlaybackEnded = options.onPlaybackEnded || null;
     this._idleCheckTimer = null;
+    this._underrunCount = 0;
   }
 
-  /**
-   * Ensure the Web Audio API AudioContext is initialized and in the 'running' state.
-   */
+  /** Ensure the Web Audio AudioContext exists and is running when possible. */
   _ensureContext() {
     if (!this.audioContext || this.audioContext.state === "closed") {
       const AudioContextClass = window.AudioContext || window.webkitAudioContext;
+      if (!AudioContextClass) {
+        throw new Error("Web Audio API is not supported in this browser.");
+      }
+
+      // Prefer the browser/device native AudioContext rate. AudioBuffer itself is created
+      // at the Gemini source rate (24 kHz), and Web Audio performs high-quality resampling.
       try {
-        this.audioContext = new AudioContextClass();
+        this.audioContext = new AudioContextClass({ latencyHint: "interactive" });
       } catch (e) {
-        this.audioContext = new AudioContextClass({ sampleRate: this.sampleRate });
+        this.audioContext = new AudioContextClass();
       }
       this.nextPlayTime = 0;
     }
@@ -53,23 +75,34 @@ class AudioPlayer {
     }
   }
 
+  _pruneCancelledTurns(now = Date.now()) {
+    for (const [turnId, expiresAt] of this.cancelledTurnIds.entries()) {
+      if (expiresAt <= now) this.cancelledTurnIds.delete(turnId);
+    }
+  }
+
+  _isTurnCancelled(turnId) {
+    if (turnId === null || turnId === undefined) return false;
+    this._pruneCancelledTurns();
+    return this.cancelledTurnIds.has(turnId);
+  }
+
+  _markTurnCancelled(turnId) {
+    if (turnId === null || turnId === undefined) return;
+    // Long enough to reject late packets from the interrupted response, short enough that
+    // reconnects which restart turn numbering do not poison future playback.
+    this.cancelledTurnIds.set(turnId, Date.now() + 15000);
+  }
+
   /**
-   * Enqueue and play a raw 16-bit PCM audio chunk progressively.
-   * 
-   * @param {ArrayBuffer|Uint8Array|Int16Array} chunk Raw PCM 16-bit little-endian audio bytes.
-   * @param {number} [turnId] Generation sequence ID to guard against race condition stale audio.
+   * Enqueue a raw 16-bit PCM chunk for gap-resistant progressive playback.
+   *
+   * @param {ArrayBuffer|Uint8Array|Int16Array} chunk
+   * @param {number|string|null} [turnId]
    */
   playChunk(chunk, turnId = null) {
-    if (!chunk) return;
+    if (!chunk || this._isTurnCancelled(turnId)) return;
 
-    // Check against cancelled turns (barge-in guard)
-    if (turnId !== null && turnId !== undefined) {
-      if (this.cancelledTurnIds.has(turnId)) {
-        return; // Drop stale audio chunk from interrupted turn
-      }
-    }
-
-    // 1. Normalize input to ArrayBuffer
     let arrayBuffer;
     if (chunk instanceof ArrayBuffer) {
       arrayBuffer = chunk;
@@ -80,31 +113,31 @@ class AudioPlayer {
       return;
     }
 
-    // 2. Validate chunk size: 16-bit PCM requires an even number of bytes
-    if (arrayBuffer.byteLength < 2) {
-      return; // Ignore empty or single-byte malformed fragments
-    }
+    if (arrayBuffer.byteLength < 2) return;
 
     const validByteLength = arrayBuffer.byteLength - (arrayBuffer.byteLength % 2);
     if (validByteLength !== arrayBuffer.byteLength) {
-      console.warn("[AudioPlayer] Truncating odd-byte audio chunk from", arrayBuffer.byteLength, "to", validByteLength);
+      console.warn(
+        "[AudioPlayer] Truncating odd-byte PCM chunk from",
+        arrayBuffer.byteLength,
+        "to",
+        validByteLength
+      );
       arrayBuffer = arrayBuffer.slice(0, validByteLength);
     }
 
     this._ensureContext();
 
-    // 3. Convert Int16 little-endian samples to Float32 [-1.0, 1.0]
     const sampleCount = validByteLength / 2;
+    if (sampleCount <= 0) return;
+
     const view = new DataView(arrayBuffer);
     const float32Data = new Float32Array(sampleCount);
-
     for (let i = 0; i < sampleCount; i++) {
-      const int16Sample = view.getInt16(i * 2, true); // little-endian
-      float32Data[i] = int16Sample / 32768.0;
+      float32Data[i] = view.getInt16(i * 2, true) / 32768.0;
     }
 
     try {
-      // 4. Create single-channel AudioBuffer
       const audioBuffer = this.audioContext.createBuffer(
         this.channels,
         sampleCount,
@@ -112,39 +145,53 @@ class AudioPlayer {
       );
       audioBuffer.getChannelData(0).set(float32Data);
 
-      // 5. Create and wire AudioBufferSourceNode
       const sourceNode = this.audioContext.createBufferSource();
       sourceNode.buffer = audioBuffer;
       sourceNode.connect(this.audioContext.destination);
 
-      // 6. Calculate contiguous start time on AudioContext timeline
       const currentTime = this.audioContext.currentTime;
-      let startTime = this.nextPlayTime;
+      const safeLeadBoundary = currentTime + this.underrunThresholdSeconds;
+      let startTime;
 
-      // If nextPlayTime is in the past (due to network jitter or pause), resync with small cushion
-      if (startTime < currentTime) {
-        startTime = currentTime + 0.015; // 15ms lead-in cushion prevents clicks
+      if (!this.isPlaying || this.nextPlayTime <= 0) {
+        // Give the first few network packets time to arrive before sound starts.
+        startTime = currentTime + this.startupBufferSeconds;
+      } else if (this.nextPlayTime <= safeLeadBoundary) {
+        // A true underrun (or near-underrun) occurred. Rebuild a small cushion once,
+        // rather than restarting each newly-arrived chunk with a tiny 15 ms gap.
+        startTime = currentTime + this.rebufferSeconds;
+        this._underrunCount += 1;
+        if (this._underrunCount <= 3 || this._underrunCount % 10 === 0) {
+          console.debug("[AudioPlayer] Network jitter underrun; rebuffering", {
+            count: this._underrunCount,
+            rebufferMs: Math.round(this.rebufferSeconds * 1000),
+          });
+        }
+      } else {
+        // Normal path: schedule exactly after the previous PCM chunk with no overlap/gap.
+        startTime = this.nextPlayTime;
       }
 
       sourceNode.start(startTime);
       this.nextPlayTime = startTime + audioBuffer.duration;
-
-      // 7. Track active sources for instant cancellation/clear
       this.activeSources.add(sourceNode);
+      if (turnId !== null && turnId !== undefined) this.currentTurnId = turnId;
+
+      // A newly scheduled source means playback is active even if it starts slightly in
+      // the future. This also keeps microphone echo-gating stable across network jitter.
+      clearTimeout(this._idleCheckTimer);
+      this._idleCheckTimer = null;
+
       if (!this.isPlaying) {
         this.isPlaying = true;
-        if (this.onPlaybackStarted) {
-          this.onPlaybackStarted();
-        }
+        if (this.onPlaybackStarted) this.onPlaybackStarted();
       }
 
       sourceNode.onended = () => {
         this.activeSources.delete(sourceNode);
         try {
           sourceNode.disconnect();
-        } catch (e) {
-          // Disconnect safe
-        }
+        } catch (_) {}
         this._scheduleIdleCheck();
       };
     } catch (playErr) {
@@ -153,39 +200,55 @@ class AudioPlayer {
   }
 
   /**
-   * Schedule check to verify if all active audio sources have finished playing.
+   * Wait through a short network gap before declaring playback finished. This prevents
+   * the app from briefly reopening the microphone between late output packets.
    */
   _scheduleIdleCheck() {
     clearTimeout(this._idleCheckTimer);
     this._idleCheckTimer = setTimeout(() => {
-      if (this.activeSources.size === 0) {
-        this.isPlaying = false;
-        if (this.onPlaybackEnded) {
-          this.onPlaybackEnded();
-        }
+      this._idleCheckTimer = null;
+      if (this.activeSources.size !== 0) return;
+
+      // If the scheduling cursor is still in the future, a source may be about to start.
+      if (this.audioContext && this.nextPlayTime > this.audioContext.currentTime + 0.005) {
+        this._scheduleIdleCheck();
+        return;
       }
-    }, 50);
+
+      this.isPlaying = false;
+      this.currentTurnId = null;
+      this.nextPlayTime = this.audioContext && this.audioContext.state !== "closed"
+        ? this.audioContext.currentTime
+        : 0;
+      if (this.onPlaybackEnded) this.onPlaybackEnded();
+    }, this.idleGraceMs);
   }
 
   /**
-   * Immediately stop and clear all pending and active audio chunks.
-   * 
-   * @param {number} [turnId] Optional turn ID to mark as cancelled.
+   * Immediately stop all pending/active audio.
+   *
+   * If the supplied turnId is the currently-playing turn it is cancelled. If the server
+   * sends the NEXT turn id in an interruption event, it is deliberately not cancelled.
+   * With no turnId, the current active turn is cancelled automatically.
+   *
+   * @param {number|string|null} [turnId]
    */
   stop(turnId = null) {
     clearTimeout(this._idleCheckTimer);
+    this._idleCheckTimer = null;
 
-    if (turnId !== null && turnId !== undefined) {
-      this.cancelledTurnIds.add(turnId);
-    }
+    const turnToCancel = (turnId === null || turnId === undefined)
+      ? this.currentTurnId
+      : (turnId === this.currentTurnId ? turnId : null);
+    this._markTurnCancelled(turnToCancel);
 
-    // Stop and disconnect every active source node immediately
     for (const source of this.activeSources) {
       try {
+        source.onended = null;
         source.stop(0);
         source.disconnect();
-      } catch (e) {
-        // Node may have already ended
+      } catch (_) {
+        // Source may have already completed.
       }
     }
     this.activeSources.clear();
@@ -196,31 +259,27 @@ class AudioPlayer {
       this.nextPlayTime = 0;
     }
 
+    this.currentTurnId = null;
     if (this.isPlaying) {
       this.isPlaying = false;
-      if (this.onPlaybackEnded) {
-        this.onPlaybackEnded();
-      }
+      if (this.onPlaybackEnded) this.onPlaybackEnded();
     }
   }
 
-  /**
-   * Clean up and close all Web Audio resources.
-   */
+  /** Clean up and close Web Audio resources. */
   async close() {
     this.stop();
     if (this.audioContext && this.audioContext.state !== "closed") {
       try {
         await this.audioContext.close();
-      } catch (e) {
-        // Context might already be closed
-      }
+      } catch (_) {}
       this.audioContext = null;
     }
+    this.nextPlayTime = 0;
+    this.cancelledTurnIds.clear();
   }
 }
 
-// Attach to window object for global availability
 if (typeof window !== "undefined") {
   window.AudioPlayer = AudioPlayer;
 }
