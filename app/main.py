@@ -33,6 +33,8 @@ from app.services.rate_limiter import rate_limiter
 from app.services.session_manager import handle_voice_websocket
 from app.services.voice_pipeline import answer_from_text, transcribe_audio, generate_speech
 
+logging.getLogger(__name__).info("Google OAuth client configured: %s", bool(get_google_client_id()))
+
 app = FastAPI(title="AI Voice Assistant Backend", version="2.1.0")
 
 ALLOWED_ORIGINS = [
