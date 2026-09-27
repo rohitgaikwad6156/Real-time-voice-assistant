@@ -24,9 +24,7 @@ services:
         generateValue: true
       - key: JWT_EXPIRE_MINUTES
         value: 10080
-      - key: SUPABASE_URL
-        sync: false
-      - key: SUPABASE_PUBLISHABLE_KEY
+      - key: GOOGLE_CLIENT_ID
         sync: false
       - key: FRONTEND_URL
         value: https://real-time-voice-assistant-lovat.vercel.app

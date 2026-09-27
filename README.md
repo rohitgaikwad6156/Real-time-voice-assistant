@@ -12,7 +12,7 @@ A full-stack voice assistant built with FastAPI, Google Gemini Live, MongoDB, an
 
 - Real-time, bidirectional speech with interruption support
 - Text input fallback over the same Gemini Live session
-- Email/password authentication plus Google OAuth through Supabase Auth
+- Email/password and Google authentication
 - Per-user conversation history, reminders, and notes in MongoDB
 - Weather function calling through Open-Meteo
 - Animated voice state, live waveform, transcripts, and tool activity
@@ -23,9 +23,7 @@ A full-stack voice assistant built with FastAPI, Google Gemini Live, MongoDB, an
 
 ```text
 Vercel /public frontend
-  -> local email/password or Supabase Google OAuth
-  -> Supabase access-token exchange for an application JWT
-  -> authenticated history REST requests
+  -> email, Google, and history REST requests
   -> authenticated WebSocket (/ws/voice)
       -> FastAPI VoiceSession
           -> Gemini Live API
@@ -47,7 +45,7 @@ app/
   services/
     auth.py                   JWT and password helpers
     gemini_client.py          Gemini Live SDK wrapper
-    supabase_auth.py          Supabase session verification
+    google_oauth.py           Google ID-token verification
     rate_limiter.py           Process-local sliding-window limiter
     session_manager.py        WebSocket lifecycle and persistence
     tool_executor.py          Concurrent function dispatch
@@ -86,8 +84,7 @@ Keep all secrets in `.env` locally and in Render environment variables in produc
 | `MONGODB_DB_NAME` | MongoDB database name | No |
 | `JWT_SECRET` | Signs access tokens | Yes |
 | `JWT_EXPIRE_MINUTES` | Token lifetime | No |
-| `SUPABASE_URL` | Browser-safe Supabase project URL | For Google login |
-| `SUPABASE_PUBLISHABLE_KEY` | Browser-safe publishable key; never use a secret/service-role key | For Google login |
+| `GOOGLE_CLIENT_ID` | Google Sign-In | For Google login |
 | `FRONTEND_URL` | Additional exact CORS origin | In production |
 | `WEATHER_API_KEY` | Use `open-meteo` for the configured provider | Yes |
 | `OPENAI_API_KEY` | Deprecated REST text/voice endpoints | Optional |
@@ -102,8 +99,7 @@ Public endpoints:
 - `GET /ready` — sanitized database readiness
 - `POST /api/auth/register`
 - `POST /api/auth/login`
-- `GET /api/auth/supabase/config`
-- `POST /api/auth/supabase` — exchanges a verified Supabase Google session for an application JWT
+- `POST /api/auth/google`
 
 Bearer-authenticated endpoints:
 
@@ -149,12 +145,3 @@ The normal suite mocks network failures and redirects legacy SQLite writes to te
 - WebSocket JWTs are carried in the first message to avoid leaking them through URL logs.
 - Only explicit frontend origins receive CORS access; add preview origins deliberately through configuration instead of accepting every `*.vercel.app` domain.
 - Notes created before the MongoDB migration are not automatically copied from the legacy SQLite database.
-
-## Supabase Google setup
-
-1. In Supabase Dashboard, open **Authentication > Providers > Google**, enable it, and enter the Google OAuth client ID and client secret.
-2. In Google Auth Platform, register the callback URL shown by Supabase. Hosted projects use `https://<project-ref>.supabase.co/auth/v1/callback`.
-3. In Supabase **Authentication > URL Configuration**, set the Site URL to the Vercel frontend and add any deliberate local/preview redirect URLs.
-4. Set `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` in Render. The publishable key is safe for the browser; never configure or expose a Supabase secret/service-role key.
-
-The browser uses the pinned `@supabase/supabase-js` 2.116.0 bundle and `signInWithOAuth({ provider: "google" })`. After the OAuth redirect, the backend validates the access token against Supabase Auth before linking the verified email to the existing MongoDB user record.
