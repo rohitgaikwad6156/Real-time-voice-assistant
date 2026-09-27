@@ -106,7 +106,12 @@
       }
 
       if (!config?.enabled || !config?.client_id) {
-        status.textContent = "Google sign-in is not configured yet.";
+        const setupButton = section.querySelector("#googleSetupButton");
+        if (setupButton) {
+          setupButton.disabled = true;
+          setupButton.style.opacity = "0.8";
+        }
+        status.textContent = "Google sign-in setup is incomplete: GOOGLE_CLIENT_ID is missing on Render.";
         return;
       }
 
@@ -182,7 +187,12 @@
         <span>or continue with</span>
         <span style="height:1px;background:#273449;flex:1"></span>
       </div>
-      <div id="googleButtonMount" style="display:flex;justify-content:center;min-height:44px"></div>
+      <div id="googleButtonMount" style="display:flex;justify-content:center;min-height:44px">
+        <button id="googleSetupButton" type="button" disabled
+          style="width:min(360px,100%);min-height:44px;border-radius:999px;border:1px solid #cbd5e1;background:white;color:#1f2937;font-weight:700;cursor:not-allowed;opacity:.8">
+          Continue with Google
+        </button>
+      </div>
       <div id="googleAuthStatus" style="min-height:18px;margin-top:8px;color:#94a3b8;font-size:12px"></div>
     `;
 
