@@ -1,7 +1,6 @@
 import logging
 import os
 import re
-import secrets
 from uuid import uuid4
 from pathlib import Path
 from typing import Optional
@@ -28,7 +27,11 @@ from app.database.mongodb import (
     list_user_reminders,
 )
 from app.services.auth import create_access_token, decode_access_token, hash_password, verify_password
-from app.services.google_oauth import get_google_client_id, verify_google_credential
+from app.services.google_oauth import (
+    get_google_client_id,
+    start_google_verification_warmup,
+    verify_google_credential,
+)
 from app.services.rate_limiter import rate_limiter
 from app.services.session_manager import handle_voice_websocket
 from app.services.voice_pipeline import answer_from_text, transcribe_audio, generate_speech
@@ -186,6 +189,10 @@ def login(request: LoginRequest, http_request: Request):
 @app.get("/api/auth/google/config")
 def google_auth_config():
     client_id = get_google_client_id()
+    if client_id:
+        # Start fetching Google's public signing keys while the user is choosing
+        # an account, so the credential exchange does not pay that network cost.
+        start_google_verification_warmup()
     return {
         "enabled": bool(client_id),
         "client_id": client_id or None,
@@ -206,13 +213,12 @@ def google_login(request: GoogleAuthRequest, http_request: Request):
         user = get_user_by_email(profile["email"])
         if not user:
             try:
-                # Google users do not need a usable password. Store an unknown,
-                # random bcrypt hash so password login cannot be used accidentally.
-                random_password = secrets.token_urlsafe(48)
+                # Google-only users never need a local password. An empty hash
+                # keeps password login disabled and avoids a slow bcrypt operation.
                 user = create_user(
                     profile["name"],
                     profile["email"],
-                    hash_password(random_password),
+                    "",
                 )
             except DuplicateKeyError:
                 # Another request may have created the same verified email first.
