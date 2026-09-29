@@ -8,6 +8,9 @@
   const CONVERSATION_KEY = "voiceAssistantConversationId";
   const SELECT_LATEST_ON_BOOT_KEY = "voiceAssistantSelectLatestOnBoot";
   const AUTH_RETRY_DELAY_MS = 2500;
+  const CONVERSATION_CACHE_PREFIX = "voiceAssistantConversations:";
+  const MESSAGE_CACHE_PREFIX = "voiceAssistantMessages:";
+  const MAX_CACHED_MESSAGES = 120;
 
   let resolveAuthReady;
   let authResultPublished = false;
@@ -41,6 +44,7 @@
   }
 
   function clearStoredSession() {
+    clearUserCaches(readCachedUser());
     localStorage.removeItem(TOKEN_KEY);
     localStorage.removeItem(USER_KEY);
     localStorage.removeItem(CONVERSATION_KEY);
@@ -124,6 +128,77 @@
       "'": "&#39;",
       '"': "&quot;",
     }[c]));
+  }
+
+  function cacheUserId(user = null) {
+    const selected = user || readCachedUser();
+    return selected?.id ? String(selected.id) : "";
+  }
+
+  function conversationCacheKey(user = null) {
+    const userId = cacheUserId(user);
+    return userId ? `${CONVERSATION_CACHE_PREFIX}${userId}` : "";
+  }
+
+  function messageCacheKey(conversationId, user = null) {
+    const userId = cacheUserId(user);
+    return userId && conversationId
+      ? `${MESSAGE_CACHE_PREFIX}${userId}:${conversationId}`
+      : "";
+  }
+
+  function readJsonCache(key) {
+    if (!key) return null;
+    try {
+      const raw = localStorage.getItem(key);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  function writeJsonCache(key, value) {
+    if (!key) return;
+    try {
+      localStorage.setItem(key, JSON.stringify(value));
+    } catch (_) {
+      // Storage can be unavailable/full on some mobile browsers. The app should
+      // continue normally and simply fall back to server-loaded history.
+    }
+  }
+
+  function cacheConversations(user, conversations) {
+    if (!Array.isArray(conversations)) return;
+    writeJsonCache(conversationCacheKey(user), conversations);
+  }
+
+  function getCachedConversations(user = null) {
+    const value = readJsonCache(conversationCacheKey(user));
+    return Array.isArray(value) ? value : [];
+  }
+
+  function cacheMessages(conversationId, messages) {
+    if (!Array.isArray(messages)) return;
+    writeJsonCache(messageCacheKey(conversationId), messages.slice(-MAX_CACHED_MESSAGES));
+  }
+
+  function getCachedMessages(conversationId) {
+    const value = readJsonCache(messageCacheKey(conversationId));
+    return Array.isArray(value) ? value : null;
+  }
+
+  function clearUserCaches(user = null) {
+    const userId = cacheUserId(user);
+    if (!userId) return;
+
+    localStorage.removeItem(`${CONVERSATION_CACHE_PREFIX}${userId}`);
+    const messagePrefix = `${MESSAGE_CACHE_PREFIX}${userId}:`;
+    const keys = [];
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const key = localStorage.key(i);
+      if (key && key.startsWith(messagePrefix)) keys.push(key);
+    }
+    keys.forEach((key) => localStorage.removeItem(key));
   }
 
   function injectStyles() {
@@ -220,6 +295,7 @@
       localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
       activeConversationId = active;
       knownConversations = conversations;
+      cacheConversations(result.user, conversations);
       configureAuthenticatedWebSocket(result.access_token, active);
       renderAuthenticatedSidebar(result.user, conversations, active);
       bindPersistentClearButton();
@@ -354,9 +430,7 @@
       </div>`;
   }
 
-  async function renderHistoryMessages(conversationId, expectedSwitchSequence = null) {
-    const data = await api(`/api/conversations/${conversationId}/messages`);
-
+  function paintHistoryMessages(messages, expectedSwitchSequence = null) {
     if (expectedSwitchSequence !== null && expectedSwitchSequence !== conversationSwitchSequence) {
       return { stale: true, turns: 0 };
     }
@@ -364,14 +438,14 @@
     const list = document.getElementById("conversationList");
     if (!list) return { stale: false, turns: 0 };
 
-    const messages = Array.isArray(data.messages) ? data.messages : [];
+    const safeMessages = Array.isArray(messages) ? messages : [];
     list.innerHTML = "";
     let turns = 0;
 
-    if (messages.length === 0) {
+    if (safeMessages.length === 0) {
       renderEmptyConversation(list);
     } else {
-      for (const msg of messages) {
+      for (const msg of safeMessages) {
         const div = document.createElement("div");
         div.className = `turn ${msg.role === "user" ? "user-turn" : "assistant-turn"}`;
         div.innerHTML = `<div class="turn-header-row"><span class="turn-role-tag">${msg.role === "user" ? "USER" : "ASSISTANT"}</span></div><div class="turn-bubble"></div>`;
@@ -389,6 +463,35 @@
     }
 
     return { stale: false, turns };
+  }
+
+  function renderCachedHistoryMessages(conversationId, expectedSwitchSequence = null) {
+    const cachedMessages = getCachedMessages(conversationId);
+    if (!cachedMessages) return null;
+    return paintHistoryMessages(cachedMessages, expectedSwitchSequence);
+  }
+
+  function renderHistoryLoading() {
+    const list = document.getElementById("conversationList");
+    if (!list) return;
+    list.innerHTML = `
+      <div class="empty-hint">
+        <div class="empty-icon">💬</div>
+        <p class="empty-title">Loading conversation...</p>
+        <p class="empty-desc">You can continue using the assistant while history refreshes.</p>
+      </div>`;
+  }
+
+  async function renderHistoryMessages(conversationId, expectedSwitchSequence = null) {
+    const data = await api(`/api/conversations/${conversationId}/messages`);
+
+    if (expectedSwitchSequence !== null && expectedSwitchSequence !== conversationSwitchSequence) {
+      return { stale: true, turns: 0 };
+    }
+
+    const messages = Array.isArray(data.messages) ? data.messages : [];
+    cacheMessages(conversationId, messages);
+    return paintHistoryMessages(messages, expectedSwitchSequence);
   }
 
   function bindPersistentClearButton() {
@@ -478,8 +581,6 @@
     if (!token) return;
 
     const switchSequence = ++conversationSwitchSequence;
-    const previousConversationId = activeConversationId;
-    const previousConfig = window.APP_CONFIG ? { ...window.APP_CONFIG } : null;
 
     localStorage.setItem(CONVERSATION_KEY, conversationId);
     localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
@@ -493,51 +594,37 @@
       window.VOICE_APP_BEGIN_CONVERSATION_SWITCH();
     }
 
-    updateStartupStatus("Loading conversation...");
+    updateStartupStatus("Opening conversation...");
 
-    try {
-      const history = await renderHistoryMessages(conversationId, switchSequence);
-      if (history.stale || switchSequence !== conversationSwitchSequence) return;
+    const cached = renderCachedHistoryMessages(conversationId, switchSequence);
+    if (!cached) renderHistoryLoading();
 
-      configureAuthenticatedWebSocket(token, conversationId);
-      highlightActiveConversation(conversationId, false);
+    // Do not make the voice connection wait for MongoDB history. The selected
+    // conversation can connect immediately while history refreshes in parallel.
+    configureAuthenticatedWebSocket(token, conversationId);
+    highlightActiveConversation(conversationId, false);
 
-      if (typeof window.VOICE_APP_COMPLETE_CONVERSATION_SWITCH === "function") {
-        window.VOICE_APP_COMPLETE_CONVERSATION_SWITCH({ turnCount: history.turns });
-      }
-
-      updateStartupStatus("Connecting conversation...");
-    } catch (err) {
-      if (switchSequence !== conversationSwitchSequence) return;
-
-      console.warn("Could not switch conversation", err);
-      activeConversationId = previousConversationId;
-      if (previousConversationId) {
-        localStorage.setItem(CONVERSATION_KEY, previousConversationId);
-        if (window.VOICE_AUTH_STATE?.ready) {
-          window.VOICE_AUTH_STATE.conversationId = previousConversationId;
-        }
-      }
-
-      if (previousConfig) window.APP_CONFIG = previousConfig;
-      highlightActiveConversation(previousConversationId, false);
-
-      let rollbackTurns = 0;
-      if (previousConversationId) {
-        try {
-          const rollback = await renderHistoryMessages(previousConversationId, switchSequence);
-          rollbackTurns = rollback.turns;
-        } catch (rollbackError) {
-          console.warn("Could not restore previous conversation history", rollbackError);
-        }
-      }
-
-      if (typeof window.VOICE_APP_CANCEL_CONVERSATION_SWITCH === "function") {
-        window.VOICE_APP_CANCEL_CONVERSATION_SWITCH({ turnCount: rollbackTurns });
-      }
-
-      updateStartupStatus("Could not switch conversation");
+    if (typeof window.VOICE_APP_COMPLETE_CONVERSATION_SWITCH === "function") {
+      window.VOICE_APP_COMPLETE_CONVERSATION_SWITCH({ turnCount: cached?.turns || 0 });
     }
+
+    updateStartupStatus("Connecting conversation...");
+
+    renderHistoryMessages(conversationId, switchSequence).catch((err) => {
+      if (switchSequence !== conversationSwitchSequence) return;
+      console.warn("Conversation history refresh delayed:", err);
+      if (!cached) {
+        const list = document.getElementById("conversationList");
+        if (list) {
+          list.innerHTML = `
+            <div class="empty-hint">
+              <div class="empty-icon">☁️</div>
+              <p class="empty-title">History is still loading</p>
+              <p class="empty-desc">The assistant can reconnect while the server catches up.</p>
+            </div>`;
+        }
+      }
+    });
   }
 
   async function deleteConversation(conversationId, user) {
@@ -609,6 +696,7 @@
       const data = await api("/api/conversations");
       const conversations = Array.isArray(data.conversations) ? data.conversations : [];
       knownConversations = conversations;
+      cacheConversations(user, conversations);
       renderAuthenticatedSidebar(user, conversations, activeConversationId);
       if (drawerWasOpen) openMobileHistoryDrawer();
     } catch (error) {
@@ -777,24 +865,24 @@
 
   async function refreshOptimisticSession(token, cachedUser, cachedConversationId) {
     try {
-      const [me, data] = await Promise.all([
-        api("/api/auth/me"),
-        api("/api/conversations"),
-      ]);
+      // One authenticated request is enough to validate the saved token and
+      // refresh the sidebar. Avoid an extra /auth/me round-trip on every load.
+      const data = await api("/api/conversations");
 
-      localStorage.setItem(USER_KEY, JSON.stringify(me.user));
       const conversations = Array.isArray(data.conversations) ? data.conversations : [];
       const activeStillExists = conversations.some((item) => item.id === cachedConversationId);
 
       if (!activeStillExists) {
         const selection = await selectConversationForSession(conversations);
+        cacheConversations(cachedUser, selection.conversations);
         localStorage.setItem(CONVERSATION_KEY, selection.conversation.id);
         location.reload();
         return;
       }
 
       knownConversations = conversations;
-      renderAuthenticatedSidebar(me.user, conversations, cachedConversationId);
+      cacheConversations(cachedUser, conversations);
+      renderAuthenticatedSidebar(cachedUser, conversations, cachedConversationId);
       renderHistoryMessages(cachedConversationId).catch((err) => {
         console.warn("Conversation history refresh delayed:", err);
       });
@@ -830,10 +918,11 @@
     // is already waking/connecting.
     if (cachedUser && cachedConversationId && !forceLatest && !authResultPublished) {
       activeConversationId = cachedConversationId;
-      knownConversations = [];
+      knownConversations = getCachedConversations(cachedUser);
       configureAuthenticatedWebSocket(token, cachedConversationId);
-      renderAuthenticatedSidebar(cachedUser, [], cachedConversationId);
+      renderAuthenticatedSidebar(cachedUser, knownConversations, cachedConversationId);
       bindPersistentClearButton();
+      renderCachedHistoryMessages(cachedConversationId);
       updateStartupStatus("Connecting assistant...");
       publishAuthResult(true, cachedUser, cachedConversationId);
       refreshOptimisticSession(token, cachedUser, cachedConversationId);
@@ -858,6 +947,7 @@
 
         activeConversationId = active;
         knownConversations = conversations;
+        cacheConversations(me.user, conversations);
         configureAuthenticatedWebSocket(token, active);
         renderAuthenticatedSidebar(me.user, conversations, active);
         bindPersistentClearButton();
