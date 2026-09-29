@@ -169,7 +169,7 @@
 
           // Load auth and Google UI in parallel. google-auth.js safely waits
           // for the auth card if auth.js has not rendered it yet.
-          const authLoad = loadScriptOnce("voice-auth-script", "/auth.js?v=2.7");
+          const authLoad = loadScriptOnce("voice-auth-script", "/auth.js?v=2.8");
           const googleLoad = loadScriptOnce("voice-google-auth-script", "/google-auth.js?v=1.4");
           googleLoad.catch((error) => console.warn("[Startup] Google auth UI unavailable:", error));
           await authLoad;
