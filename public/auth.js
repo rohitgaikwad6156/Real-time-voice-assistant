@@ -147,11 +147,16 @@
       .history-delete{flex:0 0 34px;width:34px;height:34px;border:0;border-radius:8px;background:transparent;color:#64748b;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center}
       .history-delete:hover,.history-delete:focus{background:#3b1218;color:#fca5a5;outline:none}.history-delete:disabled{opacity:.45;cursor:wait}
       .history-user{margin-top:18px;padding-top:14px;border-top:1px solid #1e293b;color:#cbd5e1;font-size:12px}.history-user strong{display:block;color:white;margin-bottom:3px}.history-logout{margin-top:9px;border:0;background:transparent;color:#f87171;padding:0;cursor:pointer}
-      body.has-history-sidebar .app-layout{margin-left:245px;width:calc(100% - 245px)}
+      body.has-history-sidebar .app-layout{
+        margin-left:245px;
+        margin-right:0;
+        width:calc(100vw - 245px);
+        max-width:none;
+      }
       .reminder-modal{position:fixed;inset:0;z-index:9998;background:rgba(2,6,23,.72);display:flex;align-items:center;justify-content:center;padding:20px}.reminder-card{width:min(520px,100%);max-height:70vh;overflow:auto;background:#0f172a;border:1px solid #334155;border-radius:18px;padding:22px;color:white}.reminder-row{padding:12px 0;border-bottom:1px solid #1e293b}.reminder-row small{display:block;color:#94a3b8;margin-top:4px}.reminder-close{float:right;border:0;background:#1e293b;color:white;border-radius:8px;padding:7px 10px;cursor:pointer}
       .history-mobile-toggle,.history-mobile-backdrop,.history-mobile-close{display:none}
       @media(max-width:900px){
-        body.has-history-sidebar .app-layout{margin-left:0;width:100%}
+        body.has-history-sidebar .app-layout{margin-left:0;margin-right:0;width:100%;max-width:none}
         .history-sidebar{
           display:block;left:0;top:0;bottom:0;width:min(86vw,320px);z-index:1002;
           transform:translateX(-105%);transition:transform .22s ease;
