@@ -5,6 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
   <meta name="voice-assistant-build" content="public-canonical-2.0">
   <title>Real-Time AI Voice Assistant</title>
+  <link rel="preconnect" href="https://accounts.google.com">
+  <link rel="preconnect" href="https://real-time-voice-assistant-9bh1.onrender.com" crossorigin>
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
@@ -168,7 +170,7 @@
 
           // Google sign-in is an enhancement to the login overlay. A Google
           // script/config issue must never block normal email/password login.
-          loadScriptOnce("voice-google-auth-script", "/google-auth.js?v=1.3")
+          loadScriptOnce("voice-google-auth-script", "/google-auth.js?v=1.4")
             .catch((error) => console.warn("[Startup] Google auth UI unavailable:", error));
 
           if (!window.VOICE_AUTH_READY) {
