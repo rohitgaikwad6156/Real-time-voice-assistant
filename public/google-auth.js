@@ -173,8 +173,10 @@
 
     const card = document.querySelector(".auth-card");
     if (!card) return false;
-    if (card.querySelector("#googleAuthSection")) {
+    const existingSection = card.querySelector("#googleAuthSection");
+    if (existingSection) {
       overlayEnhanced = true;
+      initializeGoogleButton(existingSection);
       return true;
     }
 
