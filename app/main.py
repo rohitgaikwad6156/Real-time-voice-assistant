@@ -19,6 +19,7 @@ from app.database.mongodb import (
     create_user,
     create_user_reminder,
     database_status,
+    delete_conversation,
     delete_conversation_messages,
     get_messages,
     get_user_by_email,
@@ -261,6 +262,23 @@ def conversations(user=Depends(current_user)):
 @app.post("/api/conversations")
 def new_conversation(request: ConversationRequest, user=Depends(current_user)):
     return {"conversation": create_conversation(user["id"], request.title or "New conversation")}
+
+
+@app.delete("/api/conversations/{conversation_id}")
+def remove_conversation(conversation_id: str, user=Depends(current_user)):
+    if not delete_conversation(user["id"], conversation_id):
+        raise HTTPException(status_code=404, detail="Conversation not found.")
+
+    conversations = list_conversations(user["id"])
+    if not conversations:
+        conversations = [create_conversation(user["id"], "New conversation")]
+
+    return {
+        "status": "ok",
+        "deleted_conversation_id": conversation_id,
+        "conversation_id": conversations[0]["id"],
+        "conversations": conversations,
+    }
 
 
 @app.get("/api/conversations/{conversation_id}/messages")
