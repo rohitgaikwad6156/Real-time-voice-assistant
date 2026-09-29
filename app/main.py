@@ -107,6 +107,23 @@ def enforce_rate_limit(request: Request, scope: str, limit: int, window_seconds:
         )
 
 
+def build_auth_response(user, token: str):
+    """Return everything the frontend needs to enter the app in one response."""
+    conversations = list_conversations(user["id"])
+    if conversations:
+        active = conversations[0]
+    else:
+        active = create_conversation(user["id"], "New conversation")
+        conversations = [active]
+    return {
+        "access_token": token,
+        "token_type": "bearer",
+        "user": user,
+        "conversation_id": active["id"],
+        "conversations": conversations,
+    }
+
+
 def current_user(authorization: Optional[str] = Header(default=None)):
     if not authorization or not authorization.lower().startswith("bearer "):
         raise HTTPException(status_code=401, detail="Authentication required.")
@@ -160,7 +177,7 @@ def register(request: RegisterRequest, http_request: Request):
             raise HTTPException(status_code=409, detail="An account with this email already exists.")
         user = create_user(name, str(request.email), hash_password(password))
         token = create_access_token(user["id"], user["email"])
-        return {"access_token": token, "token_type": "bearer", "user": user}
+        return build_auth_response(user, token)
     except DuplicateKeyError as exc:
         raise HTTPException(status_code=409, detail="An account with this email already exists.") from exc
     except DatabaseConfigError as exc:
@@ -181,7 +198,7 @@ def login(request: LoginRequest, http_request: Request):
 
     public_user = {k: v for k, v in user.items() if k != "password_hash"}
     token = create_access_token(public_user["id"], public_user["email"])
-    return {"access_token": token, "token_type": "bearer", "user": public_user}
+    return build_auth_response(public_user, token)
 
 
 @app.get("/api/auth/google/config")
@@ -226,7 +243,7 @@ def google_login(request: GoogleAuthRequest, http_request: Request):
             raise HTTPException(status_code=500, detail="Could not create Google account.")
 
         token = create_access_token(user["id"], user["email"])
-        return {"access_token": token, "token_type": "bearer", "user": user}
+        return build_auth_response(user, token)
     except DatabaseConfigError as exc:
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
