@@ -26,6 +26,7 @@ from app.database.mongodb import (
     get_user_by_id,
     list_conversations,
     list_user_reminders,
+    start_database_warmup,
 )
 from app.services.auth import create_access_token, decode_access_token, hash_password, verify_password
 from app.services.google_oauth import (
@@ -38,6 +39,11 @@ from app.services.rate_limiter import rate_limiter
 logging.getLogger(__name__).info("Google OAuth client configured: %s", bool(get_google_client_id()))
 
 app = FastAPI(title="AI Voice Assistant Backend", version="2.1.0")
+
+# Cold-start work runs concurrently with Uvicorn startup. Authentication requests
+# can then reuse warm MongoDB and cached Google signing keys.
+start_database_warmup()
+start_google_verification_warmup()
 
 ALLOWED_ORIGINS = [
     "http://localhost:8000",
