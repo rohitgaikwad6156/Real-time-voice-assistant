@@ -149,6 +149,32 @@
     document.head.appendChild(style);
   }
 
+  async function finishAuthentication(result) {
+    if (!result?.access_token || !result?.user) {
+      throw new Error("Authentication response is incomplete.");
+    }
+
+    localStorage.setItem(TOKEN_KEY, result.access_token);
+    localStorage.setItem(USER_KEY, JSON.stringify(result.user));
+    localStorage.removeItem(CONVERSATION_KEY);
+    localStorage.setItem(SELECT_LATEST_ON_BOOT_KEY, "1");
+
+    const overlay = document.querySelector(".auth-overlay");
+    if (overlay) overlay.remove();
+    updateStartupStatus("Opening your account...");
+
+    // If the main app was already authenticated and later expired, a reload is
+    // the safest way to rebuild its WebSocket state. Initial login does not reload.
+    if (authResultPublished) {
+      location.reload();
+      return;
+    }
+
+    await resolveAuthenticatedSession(result.user);
+  }
+
+  window.VOICE_FINISH_AUTHENTICATION = finishAuthentication;
+
   function showAuth(message = "") {
     let overlay = document.querySelector(".auth-overlay");
     if (overlay) {
@@ -223,11 +249,7 @@
           auth: false,
         });
 
-        localStorage.setItem(TOKEN_KEY, result.access_token);
-        localStorage.setItem(USER_KEY, JSON.stringify(result.user));
-        localStorage.removeItem(CONVERSATION_KEY);
-        localStorage.setItem(SELECT_LATEST_ON_BOOT_KEY, "1");
-        location.reload();
+        await finishAuthentication(result);
       } catch (err) {
         error.textContent = err.message;
         submit.disabled = false;
@@ -526,26 +548,32 @@
     return { conversation: created.conversation, conversations: [created.conversation] };
   }
 
-  async function resolveAuthenticatedSession() {
+  async function resolveAuthenticatedSession(knownUser = null) {
     const token = localStorage.getItem(TOKEN_KEY);
 
     if (!token) {
       clearStoredSession();
       showAuth();
       updateStartupStatus("Sign in to start assistant");
-      publishAuthResult(false);
+      // Keep VOICE_AUTH_READY pending. It will resolve immediately after a
+      // successful email/password or Google login, without a page reload.
       return;
     }
 
-    updateStartupStatus("Checking your session...");
+    updateStartupStatus("Loading your account...");
 
     while (true) {
       try {
-        const me = await api("/api/auth/me");
+        // Conversations can load in parallel with /me. After a fresh login we
+        // already trust the user object returned by the authenticated endpoint,
+        // so /me can be skipped entirely.
+        const [me, data] = await Promise.all([
+          knownUser ? Promise.resolve({ user: knownUser }) : api("/api/auth/me"),
+          api("/api/conversations"),
+        ]);
+        knownUser = null;
         localStorage.setItem(USER_KEY, JSON.stringify(me.user));
 
-        updateStartupStatus("Loading conversations...");
-        const data = await api("/api/conversations");
         const serverConversations = Array.isArray(data.conversations) ? data.conversations : [];
         const selection = await selectConversationForSession(serverConversations);
         const active = selection.conversation.id;
@@ -555,11 +583,16 @@
         knownConversations = conversations;
         configureAuthenticatedWebSocket(token, active);
         renderAuthenticatedSidebar(me.user, conversations, active);
-        await renderHistoryMessages(active);
         bindPersistentClearButton();
 
-        updateStartupStatus("Session ready — starting assistant...");
+        updateStartupStatus("Starting assistant...");
         publishAuthResult(true, me.user, active);
+
+        // Conversation history is useful but it should not block the application
+        // from opening or the authenticated WebSocket from connecting.
+        renderHistoryMessages(active).catch((err) => {
+          console.warn("Conversation history load delayed:", err);
+        });
         return;
       } catch (err) {
         if (err.status === 401 || err.status === 403) {
@@ -567,7 +600,6 @@
           clearStoredSession();
           showAuth("Your session expired. Please log in again.");
           updateStartupStatus("Sign in to start assistant");
-          publishAuthResult(false);
           return;
         }
 
