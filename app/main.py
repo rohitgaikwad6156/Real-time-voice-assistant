@@ -33,8 +33,6 @@ from app.services.google_oauth import (
     verify_google_credential,
 )
 from app.services.rate_limiter import rate_limiter
-from app.services.session_manager import handle_voice_websocket
-from app.services.voice_pipeline import answer_from_text, transcribe_audio, generate_speech
 
 logging.getLogger(__name__).info("Google OAuth client configured: %s", bool(get_google_client_id()))
 
@@ -279,6 +277,9 @@ def add_reminder(request: ReminderRequest, user=Depends(current_user)):
 
 @app.websocket("/ws/voice")
 async def voice_websocket_endpoint(websocket: WebSocket):
+    # Gemini/voice dependencies are intentionally imported only when voice is
+    # actually used. This keeps Render cold starts and mobile auth much faster.
+    from app.services.session_manager import handle_voice_websocket
     await handle_voice_websocket(websocket)
 
 
@@ -289,6 +290,7 @@ def text_pipeline(request: TextRequest, http_request: Request, user=Depends(curr
     if not text:
         raise HTTPException(status_code=400, detail="Please enter some text.")
     try:
+        from app.services.voice_pipeline import answer_from_text, generate_speech
         answer = answer_from_text(text)
         audio = generate_speech(answer)
         return {"transcript": text, "answer": answer, "audio_url": f"/api/audio/{audio.name}"}
@@ -311,6 +313,7 @@ async def voice_pipeline(
     temp = Path("data") / f"input-{uuid4().hex}{suffix}"
     temp.parent.mkdir(exist_ok=True)
     try:
+        from app.services.voice_pipeline import answer_from_text, generate_speech, transcribe_audio
         total = 0
         with temp.open("wb") as output:
             while chunk := await audio.read(1024 * 1024):
