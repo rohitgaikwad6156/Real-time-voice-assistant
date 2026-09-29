@@ -5,6 +5,7 @@ from __future__ import annotations
 import logging
 import os
 import re
+import threading
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
@@ -23,6 +24,8 @@ class DatabaseConfigError(RuntimeError):
 _client: Optional[MongoClient] = None
 _db: Optional[Database] = None
 _indexes_ready = False
+_db_lock = threading.Lock()
+_warmup_started = False
 
 
 def _now() -> datetime:
@@ -56,27 +59,60 @@ def get_database() -> Database:
     if _db is not None:
         return _db
 
-    uri = os.getenv("MONGODB_URI", "").strip()
-    if not uri:
-        raise DatabaseConfigError(
-            "MONGODB_URI is not configured. Add your MongoDB Atlas connection string in Render Environment."
+    with _db_lock:
+        if _db is not None:
+            return _db
+
+        uri = os.getenv("MONGODB_URI", "").strip()
+        if not uri:
+            raise DatabaseConfigError(
+                "MONGODB_URI is not configured. Add your MongoDB Atlas connection string in Render Environment."
+            )
+
+        db_name = os.getenv("MONGODB_DB_NAME", "voice_assistant").strip() or "voice_assistant"
+        _client = MongoClient(
+            uri,
+            serverSelectionTimeoutMS=7000,
+            connectTimeoutMS=7000,
+            appName="real-time-voice-assistant",
         )
+        _client.admin.command("ping")
+        _db = _client[db_name]
 
-    db_name = os.getenv("MONGODB_DB_NAME", "voice_assistant").strip() or "voice_assistant"
-    _client = MongoClient(uri, serverSelectionTimeoutMS=7000, connectTimeoutMS=7000)
-    _client.admin.command("ping")
-    _db = _client[db_name]
+        if not _indexes_ready:
+            _db.users.create_index([("email", ASCENDING)], unique=True)
+            _db.conversations.create_index([("user_id", ASCENDING), ("updated_at", DESCENDING)])
+            _db.messages.create_index([("conversation_id", ASCENDING), ("created_at", ASCENDING)])
+            _db.messages.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+            _db.reminders.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
+            _db.notes.create_index([("user_id", ASCENDING), ("updated_at", DESCENDING)])
+            _indexes_ready = True
 
-    if not _indexes_ready:
-        _db.users.create_index([("email", ASCENDING)], unique=True)
-        _db.conversations.create_index([("user_id", ASCENDING), ("updated_at", DESCENDING)])
-        _db.messages.create_index([("conversation_id", ASCENDING), ("created_at", ASCENDING)])
-        _db.messages.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
-        _db.reminders.create_index([("user_id", ASCENDING), ("created_at", DESCENDING)])
-        _db.notes.create_index([("user_id", ASCENDING), ("updated_at", DESCENDING)])
-        _indexes_ready = True
+        return _db
 
-    return _db
+
+def _database_warmup_worker() -> None:
+    global _warmup_started
+    try:
+        get_database()
+        logger.info("MongoDB warmup complete.")
+    except Exception as exc:
+        logger.warning("MongoDB warmup failed: %s", type(exc).__name__)
+    finally:
+        _warmup_started = False
+
+
+def start_database_warmup() -> None:
+    """Warm MongoDB in the background without blocking server startup."""
+    global _warmup_started
+    if _db is not None or _warmup_started or not os.getenv("MONGODB_URI", "").strip():
+        return
+    _warmup_started = True
+    threading.Thread(
+        target=_database_warmup_worker,
+        name="mongodb-warmup",
+        daemon=True,
+    ).start()
 
 
 def database_status() -> Dict[str, Any]:
