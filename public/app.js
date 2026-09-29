@@ -796,6 +796,9 @@ function handleServerMessage(message) {
     if (currentAssistantState !== "speaking" && currentAssistantState !== "interrupted") {
       setAssistantState(isStreaming ? "listening" : "idle");
     }
+    if (typeof window.VOICE_REFRESH_CONVERSATIONS === "function") {
+      window.VOICE_REFRESH_CONVERSATIONS();
+    }
   }
 }
 
