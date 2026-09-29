@@ -169,6 +169,7 @@ def create_conversation(user_id: str, title: str = "New conversation") -> Dict[s
     doc = {
         "user_id": user_id,
         "title": (title or "New conversation").strip()[:80],
+        "description": "",
         "created_at": now,
         "updated_at": now,
     }
@@ -200,21 +201,41 @@ def list_conversations(user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
     return [_serialize(doc) or {} for doc in cursor]
 
 
-def _maybe_update_conversation_title(user_id: str, conversation_id: str, text: str) -> None:
+def _maybe_update_conversation_metadata(
+    user_id: str,
+    conversation_id: str,
+    role: str,
+    text: str,
+) -> None:
+    """Keep the conversation title and a compact AI-created description in sync."""
     db = get_database()
     try:
         oid = _oid(conversation_id)
     except ValueError:
         return
+
     conversation = db.conversations.find_one({"_id": oid, "user_id": user_id})
     if not conversation:
         return
+
+    clean = " ".join((text or "").strip().split())
     update: Dict[str, Any] = {"updated_at": _now()}
-    if conversation.get("title") in (None, "", "New conversation"):
-        clean = " ".join(text.strip().split())
+
+    if role == "user" and conversation.get("title") in (None, "", "New conversation"):
         if clean:
             update["title"] = clean[:60] + ("…" if len(clean) > 60 else "")
-    db.conversations.update_one({"_id": oid, "user_id": user_id}, {"$set": update})
+
+    if role == "assistant" and not conversation.get("description"):
+        if clean:
+            # The description is taken from the AI's own first response, so it
+            # requires no additional model request and adds no extra chat latency.
+            description = clean[:115]
+            update["description"] = description + ("…" if len(clean) > 115 else "")
+
+    db.conversations.update_one(
+        {"_id": oid, "user_id": user_id},
+        {"$set": update},
+    )
 
 
 def delete_conversation(user_id: str, conversation_id: str) -> bool:
@@ -256,7 +277,7 @@ def save_message(user_id: str, conversation_id: str, role: str, text: str) -> Op
     }
     result = db.messages.insert_one(doc)
     doc["_id"] = result.inserted_id
-    _maybe_update_conversation_title(user_id, conversation_id, clean if role == "user" else "")
+    _maybe_update_conversation_metadata(user_id, conversation_id, role, clean)
     return _serialize(doc)
 
 
