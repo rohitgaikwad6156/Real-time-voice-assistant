@@ -142,10 +142,8 @@
       .history-brand{color:white;font-weight:800;font-size:14px;margin-bottom:16px}.history-new,.history-reminders{width:100%;padding:10px 12px;border-radius:10px;border:1px solid #334155;background:#111c31;color:#e2e8f0;text-align:left;cursor:pointer;margin-bottom:8px;font-weight:700}
       .history-label{color:#64748b;font-size:11px;text-transform:uppercase;letter-spacing:.08em;margin:18px 6px 8px}
       .history-row{display:flex;align-items:center;gap:4px;border-radius:9px;margin-bottom:2px}
-      .history-item{flex:1;min-width:0;padding:9px 10px;border-radius:9px;color:#cbd5e1;font-size:13px;cursor:pointer;overflow:hidden}
-      .history-item-title{font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-      .history-item-description{margin-top:3px;color:#64748b;font-size:11px;line-height:1.35;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
-      .history-item:hover,.history-item.active{background:#17233a;color:white}.history-item.active .history-item-description,.history-item:hover .history-item-description{color:#94a3b8}.history-item.switching{opacity:.7;cursor:wait}
+      .history-item{flex:1;min-width:0;padding:10px;border-radius:9px;color:#cbd5e1;font-size:13px;font-weight:700;cursor:pointer;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .history-item:hover,.history-item.active{background:#17233a;color:white}.history-item.switching{opacity:.7;cursor:wait}
       .history-delete{flex:0 0 34px;width:34px;height:34px;border:0;border-radius:8px;background:transparent;color:#64748b;cursor:pointer;font-size:15px;display:flex;align-items:center;justify-content:center}
       .history-delete:hover,.history-delete:focus{background:#3b1218;color:#fca5a5;outline:none}.history-delete:disabled{opacity:.45;cursor:wait}
       .history-user{margin-top:18px;padding-top:14px;border-top:1px solid #1e293b;color:#cbd5e1;font-size:12px}.history-user strong{display:block;color:white;margin-bottom:3px}.history-logout{margin-top:9px;border:0;background:transparent;color:#f87171;padding:0;cursor:pointer}
@@ -591,6 +589,35 @@
     }
   }
 
+  async function refreshConversationSidebar() {
+    const token = localStorage.getItem(TOKEN_KEY);
+    if (!token || !activeConversationId) return;
+
+    const rawUser = localStorage.getItem(USER_KEY);
+    if (!rawUser) return;
+
+    let user;
+    try {
+      user = JSON.parse(rawUser);
+    } catch (_) {
+      return;
+    }
+
+    const drawerWasOpen = document.querySelector(".history-sidebar")?.classList.contains("mobile-open");
+
+    try {
+      const data = await api("/api/conversations");
+      const conversations = Array.isArray(data.conversations) ? data.conversations : [];
+      knownConversations = conversations;
+      renderAuthenticatedSidebar(user, conversations, activeConversationId);
+      if (drawerWasOpen) openMobileHistoryDrawer();
+    } catch (error) {
+      console.warn("Could not refresh AI conversation title:", error);
+    }
+  }
+
+  window.VOICE_REFRESH_CONVERSATIONS = refreshConversationSidebar;
+
   function closeMobileHistoryDrawer() {
     const sidebar = document.querySelector(".history-sidebar");
     const backdrop = document.querySelector(".history-mobile-backdrop");
@@ -667,20 +694,8 @@
       const item = document.createElement("div");
       item.className = `history-item ${conversation.id === active ? "active" : ""}`;
       item.dataset.conversationId = conversation.id;
-
-      const title = document.createElement("div");
-      title.className = "history-item-title";
-      title.textContent = conversation.title || "New conversation";
-
-      const description = document.createElement("div");
-      description.className = "history-item-description";
-      description.textContent = conversation.description || "AI description will appear after the assistant replies.";
-
-      item.appendChild(title);
-      item.appendChild(description);
-      item.title = conversation.description
-        ? `${conversation.title || "New conversation"} — ${conversation.description}`
-        : (conversation.title || "New conversation");
+      item.textContent = conversation.title || "New conversation";
+      item.title = conversation.title || "New conversation";
       item.onclick = () => {
         closeMobileHistoryDrawer();
         switchConversation(conversation.id);
