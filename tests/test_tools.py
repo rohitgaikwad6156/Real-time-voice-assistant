@@ -96,7 +96,8 @@ def test_weather_api_failure_timeout(monkeypatch):
 
 
 def test_weather_missing_api_configuration(monkeypatch):
-    """Test 4: Missing API configuration returns structured error."""
+    """OpenWeatherMap requires an API key; Open-Meteo does not."""
+    monkeypatch.setenv("WEATHER_API_PROVIDER", "openweathermap")
     monkeypatch.setenv("WEATHER_API_KEY", "")
     result = get_weather(city="Pune")
     assert result["status"] == "error"
