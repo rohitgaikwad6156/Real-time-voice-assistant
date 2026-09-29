@@ -181,6 +181,26 @@ def _maybe_update_conversation_title(user_id: str, conversation_id: str, text: s
     db.conversations.update_one({"_id": oid, "user_id": user_id}, {"$set": update})
 
 
+def delete_conversation(user_id: str, conversation_id: str) -> bool:
+    """Delete an owned conversation and all of its messages."""
+    db = get_database()
+    try:
+        oid = _oid(conversation_id)
+    except ValueError:
+        return False
+
+    conversation = db.conversations.find_one({"_id": oid, "user_id": user_id})
+    if not conversation:
+        return False
+
+    db.messages.delete_many({
+        "user_id": user_id,
+        "conversation_id": conversation_id,
+    })
+    result = db.conversations.delete_one({"_id": oid, "user_id": user_id})
+    return result.deleted_count == 1
+
+
 # ----------------------------- Messages -------------------------------
 
 def save_message(user_id: str, conversation_id: str, role: str, text: str) -> Optional[Dict[str, Any]]:
