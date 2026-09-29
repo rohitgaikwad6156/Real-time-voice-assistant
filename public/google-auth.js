@@ -138,9 +138,13 @@
               method: "POST",
               body: JSON.stringify({ credential }),
             });
-            storeAuthenticatedSession(result);
-            status.textContent = "Signed in. Starting assistant...";
-            location.reload();
+            status.textContent = "Signed in. Opening assistant...";
+            if (typeof window.VOICE_FINISH_AUTHENTICATION === "function") {
+              await window.VOICE_FINISH_AUTHENTICATION(result);
+            } else {
+              storeAuthenticatedSession(result);
+              location.reload();
+            }
           } catch (error) {
             console.error("[Google Auth]", error);
             status.textContent = error.message || "Google sign-in failed.";
