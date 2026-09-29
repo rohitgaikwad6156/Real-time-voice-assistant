@@ -144,7 +144,39 @@
       .history-user{margin-top:18px;padding-top:14px;border-top:1px solid #1e293b;color:#cbd5e1;font-size:12px}.history-user strong{display:block;color:white;margin-bottom:3px}.history-logout{margin-top:9px;border:0;background:transparent;color:#f87171;padding:0;cursor:pointer}
       body.has-history-sidebar .app-layout{margin-left:245px;width:calc(100% - 245px)}
       .reminder-modal{position:fixed;inset:0;z-index:9998;background:rgba(2,6,23,.72);display:flex;align-items:center;justify-content:center;padding:20px}.reminder-card{width:min(520px,100%);max-height:70vh;overflow:auto;background:#0f172a;border:1px solid #334155;border-radius:18px;padding:22px;color:white}.reminder-row{padding:12px 0;border-bottom:1px solid #1e293b}.reminder-row small{display:block;color:#94a3b8;margin-top:4px}.reminder-close{float:right;border:0;background:#1e293b;color:white;border-radius:8px;padding:7px 10px;cursor:pointer}
-      @media(max-width:900px){.history-sidebar{display:none}body.has-history-sidebar .app-layout{margin-left:0;width:100%}}
+      .history-mobile-toggle,.history-mobile-backdrop,.history-mobile-close{display:none}
+      @media(max-width:900px){
+        body.has-history-sidebar .app-layout{margin-left:0;width:100%}
+        .history-sidebar{
+          display:block;left:0;top:0;bottom:0;width:min(86vw,320px);z-index:1002;
+          transform:translateX(-105%);transition:transform .22s ease;
+          box-shadow:18px 0 45px rgba(0,0,0,.45);padding-top:18px
+        }
+        .history-sidebar.mobile-open{transform:translateX(0)}
+        .history-mobile-toggle{
+          display:flex;position:fixed;left:12px;top:12px;z-index:1000;
+          width:44px;height:44px;align-items:center;justify-content:center;
+          border:1px solid #334155;border-radius:12px;background:#0f172a;
+          color:#f8fafc;font-size:22px;line-height:1;box-shadow:0 8px 24px rgba(0,0,0,.28);
+          cursor:pointer
+        }
+        .history-mobile-backdrop{
+          position:fixed;inset:0;z-index:1001;background:rgba(2,6,23,.68);
+          backdrop-filter:blur(2px)
+        }
+        .history-mobile-backdrop.visible{display:block}
+        .history-mobile-close{
+          display:flex;position:absolute;right:12px;top:12px;width:36px;height:36px;
+          align-items:center;justify-content:center;border:1px solid #334155;border-radius:10px;
+          background:#111c31;color:#f8fafc;font-size:20px;cursor:pointer
+        }
+        .history-brand{padding-right:46px}
+        .history-user{position:sticky;bottom:0;background:#0a1220;padding-bottom:12px}
+        .history-logout{
+          width:100%;margin-top:10px;padding:10px 12px;border:1px solid #7f1d1d;
+          border-radius:10px;background:#2a1015;color:#fca5a5;font-weight:700;text-align:center
+        }
+      }
     `;
     document.head.appendChild(style);
   }
@@ -498,17 +530,56 @@
     }
   }
 
+  function closeMobileHistoryDrawer() {
+    const sidebar = document.querySelector(".history-sidebar");
+    const backdrop = document.querySelector(".history-mobile-backdrop");
+    const toggle = document.querySelector(".history-mobile-toggle");
+    if (sidebar) sidebar.classList.remove("mobile-open");
+    if (backdrop) backdrop.classList.remove("visible");
+    if (toggle) toggle.setAttribute("aria-expanded", "false");
+    document.body.classList.remove("history-drawer-open");
+  }
+
+  function openMobileHistoryDrawer() {
+    const sidebar = document.querySelector(".history-sidebar");
+    const backdrop = document.querySelector(".history-mobile-backdrop");
+    const toggle = document.querySelector(".history-mobile-toggle");
+    if (sidebar) sidebar.classList.add("mobile-open");
+    if (backdrop) backdrop.classList.add("visible");
+    if (toggle) toggle.setAttribute("aria-expanded", "true");
+    document.body.classList.add("history-drawer-open");
+  }
+
   function renderAuthenticatedSidebar(user, conversations, active) {
     document.body.classList.add("has-history-sidebar");
     knownConversations = conversations;
     activeConversationId = active;
-
+  
     const existing = document.querySelector(".history-sidebar");
     if (existing) existing.remove();
-
+    document.querySelector(".history-mobile-toggle")?.remove();
+    document.querySelector(".history-mobile-backdrop")?.remove();
+  
+    const toggle = document.createElement("button");
+    toggle.className = "history-mobile-toggle";
+    toggle.type = "button";
+    toggle.setAttribute("aria-label", "Open conversation history");
+    toggle.setAttribute("aria-expanded", "false");
+    toggle.textContent = "☰";
+    toggle.onclick = openMobileHistoryDrawer;
+    document.body.appendChild(toggle);
+  
+    const backdrop = document.createElement("div");
+    backdrop.className = "history-mobile-backdrop";
+    backdrop.setAttribute("aria-hidden", "true");
+    backdrop.onclick = closeMobileHistoryDrawer;
+    document.body.appendChild(backdrop);
+  
     const sidebar = document.createElement("aside");
     sidebar.className = "history-sidebar";
+    sidebar.setAttribute("aria-label", "Conversation history and account");
     sidebar.innerHTML = `
+      <button class="history-mobile-close" type="button" aria-label="Close conversation history">×</button>
       <div class="history-brand">🎙️ Voice Assistant</div>
       <button class="history-new">＋ New chat</button>
       <button class="history-reminders">⏰ Reminders</button>
@@ -516,19 +587,33 @@
       <div class="history-list"></div>
       <div class="history-user"><strong>${escapeHtml(user.name)}</strong>${escapeHtml(user.email)}<br><button class="history-logout">Log out</button></div>`;
     document.body.appendChild(sidebar);
-
+  
+    sidebar.querySelector(".history-mobile-close").onclick = closeMobileHistoryDrawer;
+  
     const list = sidebar.querySelector(".history-list");
+    if (!conversations.length) {
+      const loading = document.createElement("div");
+      loading.className = "history-item";
+      loading.textContent = "Loading conversations...";
+      loading.style.opacity = ".65";
+      list.appendChild(loading);
+    }
+  
     conversations.forEach((conversation) => {
       const item = document.createElement("div");
       item.className = `history-item ${conversation.id === active ? "active" : ""}`;
       item.dataset.conversationId = conversation.id;
       item.textContent = conversation.title || "New conversation";
       item.title = conversation.title || "New conversation";
-      item.onclick = () => switchConversation(conversation.id);
+      item.onclick = () => {
+        closeMobileHistoryDrawer();
+        switchConversation(conversation.id);
+      };
       list.appendChild(item);
     });
-
+  
     sidebar.querySelector(".history-new").onclick = async () => {
+      closeMobileHistoryDrawer();
       const created = await api("/api/conversations", {
         method: "POST",
         body: JSON.stringify({ title: "New conversation" }),
@@ -537,14 +622,18 @@
       localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
       location.reload();
     };
-
-    sidebar.querySelector(".history-reminders").onclick = showReminders;
+  
+    sidebar.querySelector(".history-reminders").onclick = () => {
+      closeMobileHistoryDrawer();
+      showReminders();
+    };
+  
     sidebar.querySelector(".history-logout").onclick = () => {
+      closeMobileHistoryDrawer();
       clearStoredSession();
       location.reload();
     };
   }
-
   async function selectConversationForSession(conversations) {
     if (conversations.length > 0) {
       const forceLatest = localStorage.getItem(SELECT_LATEST_ON_BOOT_KEY) === "1";
