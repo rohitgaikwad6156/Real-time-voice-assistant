@@ -7,9 +7,6 @@
   <title>Real-Time AI Voice Assistant</title>
   <link rel="preconnect" href="https://accounts.google.com">
   <link rel="preconnect" href="https://real-time-voice-assistant-9bh1.onrender.com" crossorigin>
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap" rel="stylesheet">
   <link rel="stylesheet" href="/style.css?v=3.5">
 </head>
 <body>
@@ -73,8 +70,6 @@
     <button id="voiceButton" style="display:none"></button><audio id="recordedAudio" style="display:none"></audio><audio id="responseAudio" style="display:none"></audio><a id="downloadLink" style="display:none"></a>
   </div>
 
-  <script src="/audio-streamer.js?v=3.0"></script>
-  <script src="/audio-player.js?v=3.0"></script>
   <script>
     (() => {
       if (window.__VOICE_ASSISTANT_BOOT_STARTED__) return;
@@ -128,6 +123,12 @@
         });
       }
 
+      window.VOICE_LOAD_AUDIO_DEPENDENCIES = async () => {
+        if (window.AudioStreamer && window.AudioPlayer) return;
+        await loadScriptOnce("voice-audio-streamer", "/audio-streamer.js?v=3.0");
+        await loadScriptOnce("voice-audio-player", "/audio-player.js?v=3.0");
+      };
+
       async function pingBackendOnce() {
         const controller = new AbortController();
         const timeoutId = setTimeout(() => controller.abort(), WARM_REQUEST_TIMEOUT_MS);
@@ -165,13 +166,12 @@
         try {
           updateStartupUI("Checking account...");
 
-          // Authentication loads immediately. It no longer waits for /health.
-          await loadScriptOnce("voice-auth-script", "/auth.js?v=2.5");
-
-          // Google sign-in is an enhancement to the login overlay. A Google
-          // script/config issue must never block normal email/password login.
-          loadScriptOnce("voice-google-auth-script", "/google-auth.js?v=1.4")
-            .catch((error) => console.warn("[Startup] Google auth UI unavailable:", error));
+          // Load auth and Google UI in parallel. google-auth.js safely waits
+          // for the auth card if auth.js has not rendered it yet.
+          const authLoad = loadScriptOnce("voice-auth-script", "/auth.js?v=2.5");
+          const googleLoad = loadScriptOnce("voice-google-auth-script", "/google-auth.js?v=1.4");
+          googleLoad.catch((error) => console.warn("[Startup] Google auth UI unavailable:", error));
+          await authLoad;
 
           if (!window.VOICE_AUTH_READY) {
             throw new Error("Authentication readiness signal was not created.");
@@ -200,8 +200,9 @@
         }
       }
 
-      // Start waking Render immediately, but never make the UI wait for it.
-      warmBackendInBackground().catch(() => {});
+      // Give the small auth assets priority on slower mobile connections, then
+      // wake Render in the background without blocking the login UI.
+      setTimeout(() => warmBackendInBackground().catch(() => {}), 700);
       initializeAuthenticatedFrontendOnce().catch((error) => {
         console.error("[Startup] Unexpected boot error:", error);
         updateStartupUI("Startup interrupted — retrying...");
