@@ -51,6 +51,7 @@ class VoiceSession:
         self.gemini_session: Optional[GeminiLiveSession] = None
         self._gemini_cm: Optional[Any] = None
         self._receive_task: Optional[asyncio.Task] = None
+        self._gemini_connect_task: Optional[asyncio.Task] = None
         self.audio_chunks_received = 0
         self.total_bytes_received = 0
         self.turn_id = 1
@@ -73,6 +74,10 @@ class VoiceSession:
         self.tool_executor = get_default_tool_executor(user_id=self.user_id)
         await self.send_status(status="authenticated", conversation=conversation)
 
+        # Do not block login/UI readiness on Gemini's network handshake. Start it
+        # immediately in the background so the first voice/text turn is warm.
+        asyncio.create_task(self.preconnect_gemini())
+
     async def _persist_user(self, text: str) -> None:
         if not self.authenticated or not text.strip() or self._user_saved_for_turn:
             return
@@ -89,18 +94,61 @@ class VoiceSession:
         self._assistant_buffer = ""
         self._user_saved_for_turn = False
 
+    async def _connect_gemini(self) -> GeminiLiveSession:
+        if self.gemini_client is None:
+            self.gemini_client = get_gemini_client()
+        gemini_cm = self.gemini_client.connect()
+        gemini_session = await gemini_cm.__aenter__()
+
+        if not self.is_active:
+            await gemini_cm.__aexit__(None, None, None)
+            raise RuntimeError("Voice session closed before Gemini connected.")
+
+        self._gemini_cm = gemini_cm
+        self.gemini_session = gemini_session
+        self._receive_task = asyncio.create_task(self._listen_to_gemini())
+        logger.info("Session %s connected to Gemini Live API", self.session_id)
+        return gemini_session
+
     async def ensure_gemini_connected(self) -> GeminiLiveSession:
         if self.gemini_session is not None:
             return self.gemini_session
-        if self.gemini_client is None:
-            self.gemini_client = get_gemini_client()
-        self._gemini_cm = self.gemini_client.connect()
-        self.gemini_session = await self._gemini_cm.__aenter__()
-        self._receive_task = asyncio.create_task(self._listen_to_gemini())
-        logger.info("Session %s connected to Gemini Live API", self.session_id)
-        return self.gemini_session
+
+        task = self._gemini_connect_task
+        if task is None or task.done():
+            task = asyncio.create_task(self._connect_gemini())
+            self._gemini_connect_task = task
+
+        try:
+            return await task
+        finally:
+            if self._gemini_connect_task is task and task.done():
+                self._gemini_connect_task = None
+
+    async def preconnect_gemini(self) -> None:
+        """Warm Gemini Live after auth so first voice/text use is much faster."""
+        try:
+            await self.ensure_gemini_connected()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Gemini preconnect failed for %s: %s",
+                self.session_id,
+                sanitize_error_message(str(exc)),
+            )
 
     async def reset_gemini_session(self, close_task: bool = True) -> None:
+        connect_task = self._gemini_connect_task
+        if connect_task is not None and not connect_task.done() and connect_task != asyncio.current_task():
+            connect_task.cancel()
+            try:
+                await connect_task
+            except (asyncio.CancelledError, Exception):
+                pass
+        if self._gemini_connect_task is connect_task:
+            self._gemini_connect_task = None
+
         if close_task and self._receive_task is not None and self._receive_task != asyncio.current_task():
             self._receive_task.cancel()
             try:
