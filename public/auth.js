@@ -172,6 +172,20 @@
           <button class="auth-submit" type="submit">Login</button>
           <div class="auth-error" id="authError">${escapeHtml(message)}</div>
         </form>
+        <div id="googleAuthSection" style="margin-top:18px;text-align:center">
+          <div style="display:flex;align-items:center;gap:10px;margin:4px 0 14px;color:#64748b;font-size:12px">
+            <span style="height:1px;background:#273449;flex:1"></span>
+            <span>or continue with</span>
+            <span style="height:1px;background:#273449;flex:1"></span>
+          </div>
+          <div id="googleButtonMount" style="display:flex;justify-content:center;min-height:44px">
+            <button id="googleSetupButton" type="button" disabled
+              style="width:min(360px,100%);min-height:44px;border-radius:999px;border:1px solid #cbd5e1;background:white;color:#1f2937;font-weight:700;cursor:not-allowed;opacity:.8">
+              Continue with Google
+            </button>
+          </div>
+          <div id="googleAuthStatus" style="min-height:18px;margin-top:8px;color:#94a3b8;font-size:12px">Loading Google sign-in...</div>
+        </div>
       </div>`;
     document.body.appendChild(overlay);
 
