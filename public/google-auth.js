@@ -8,6 +8,9 @@
   const CONVERSATION_KEY = "voiceAssistantConversationId";
   const SELECT_LATEST_ON_BOOT_KEY = "voiceAssistantSelectLatestOnBoot";
   const GOOGLE_SCRIPT_ID = "google-identity-services";
+  // OAuth Web Client IDs are public identifiers. Keeping it here lets mobile
+  // render Google Sign-In without waiting for a sleeping Render instance.
+  const GOOGLE_CLIENT_ID = "363499205206-cfhvbvaem4g9k2ehial3jmbp75qpp5l3.apps.googleusercontent.com";
 
   let overlayEnhanced = false;
   let googleInitInProgress = false;
@@ -89,32 +92,11 @@
     const status = section.querySelector("#googleAuthStatus");
     status.textContent = "Loading Google sign-in...";
 
+    // Wake Render and pre-warm Google's signing keys, but never block the button
+    // on this request. This is especially important on slower mobile networks.
+    api("/api/auth/google/config", { method: "GET" }).catch(() => {});
+
     try {
-      let config = null;
-
-      // Render free instances can be asleep. Retry config while keeping the
-      // ordinary email/password form usable immediately.
-      for (let attempt = 0; attempt < 12; attempt++) {
-        try {
-          config = await api("/api/auth/google/config", { method: "GET" });
-          break;
-        } catch (error) {
-          if (attempt === 11) throw error;
-          status.textContent = "Waking server for Google sign-in...";
-          await sleep(attempt < 3 ? 1500 : 2500);
-        }
-      }
-
-      if (!config?.enabled || !config?.client_id) {
-        const setupButton = section.querySelector("#googleSetupButton");
-        if (setupButton) {
-          setupButton.disabled = true;
-          setupButton.style.opacity = "0.8";
-        }
-        status.textContent = "Google sign-in setup is incomplete: GOOGLE_CLIENT_ID is missing on Render.";
-        return;
-      }
-
       await loadGoogleIdentityScript();
       if (!window.google?.accounts?.id) {
         throw new Error("Google Sign-In did not initialize.");
@@ -122,7 +104,7 @@
 
       mount.innerHTML = "";
       window.google.accounts.id.initialize({
-        client_id: config.client_id,
+        client_id: GOOGLE_CLIENT_ID,
         auto_select: false,
         cancel_on_tap_outside: true,
         callback: async (response) => {
