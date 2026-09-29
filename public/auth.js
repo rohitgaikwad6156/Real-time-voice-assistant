@@ -156,20 +156,42 @@
 
     localStorage.setItem(TOKEN_KEY, result.access_token);
     localStorage.setItem(USER_KEY, JSON.stringify(result.user));
-    localStorage.removeItem(CONVERSATION_KEY);
-    localStorage.setItem(SELECT_LATEST_ON_BOOT_KEY, "1");
 
     const overlay = document.querySelector(".auth-overlay");
     if (overlay) overlay.remove();
     updateStartupStatus("Opening your account...");
 
     // If the main app was already authenticated and later expired, a reload is
-    // the safest way to rebuild its WebSocket state. Initial login does not reload.
+    // the safest way to rebuild its WebSocket state.
     if (authResultPublished) {
       location.reload();
       return;
     }
 
+    const active = result.conversation_id || null;
+    const conversations = Array.isArray(result.conversations) ? result.conversations : [];
+
+    // New auth endpoints return the selected conversation in the same response.
+    // Enter the app immediately instead of making another blocking API request.
+    if (active) {
+      localStorage.setItem(CONVERSATION_KEY, active);
+      localStorage.removeItem(SELECT_LATEST_ON_BOOT_KEY);
+      activeConversationId = active;
+      knownConversations = conversations;
+      configureAuthenticatedWebSocket(result.access_token, active);
+      renderAuthenticatedSidebar(result.user, conversations, active);
+      bindPersistentClearButton();
+      updateStartupStatus("Connecting assistant...");
+      publishAuthResult(true, result.user, active);
+      renderHistoryMessages(active).catch((err) => {
+        console.warn("Conversation history load delayed:", err);
+      });
+      return;
+    }
+
+    // Compatibility fallback for an older backend during a rolling deployment.
+    localStorage.removeItem(CONVERSATION_KEY);
+    localStorage.setItem(SELECT_LATEST_ON_BOOT_KEY, "1");
     await resolveAuthenticatedSession(result.user);
   }
 
@@ -548,6 +570,50 @@
     return { conversation: created.conversation, conversations: [created.conversation] };
   }
 
+  function readCachedUser() {
+    try {
+      const raw = localStorage.getItem(USER_KEY);
+      return raw ? JSON.parse(raw) : null;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  async function refreshOptimisticSession(token, cachedUser, cachedConversationId) {
+    try {
+      const [me, data] = await Promise.all([
+        api("/api/auth/me"),
+        api("/api/conversations"),
+      ]);
+
+      localStorage.setItem(USER_KEY, JSON.stringify(me.user));
+      const conversations = Array.isArray(data.conversations) ? data.conversations : [];
+      const activeStillExists = conversations.some((item) => item.id === cachedConversationId);
+
+      if (!activeStillExists) {
+        const selection = await selectConversationForSession(conversations);
+        localStorage.setItem(CONVERSATION_KEY, selection.conversation.id);
+        location.reload();
+        return;
+      }
+
+      knownConversations = conversations;
+      renderAuthenticatedSidebar(me.user, conversations, cachedConversationId);
+      renderHistoryMessages(cachedConversationId).catch((err) => {
+        console.warn("Conversation history refresh delayed:", err);
+      });
+    } catch (err) {
+      if (err.status === 401 || err.status === 403) {
+        console.warn("Cached session is no longer valid.");
+        clearStoredSession();
+        showAuth("Your session expired. Please log in again.");
+        updateStartupStatus("Sign in to start assistant");
+        return;
+      }
+      console.warn("Background session refresh delayed:", err);
+    }
+  }
+
   async function resolveAuthenticatedSession(knownUser = null) {
     const token = localStorage.getItem(TOKEN_KEY);
 
@@ -555,8 +621,26 @@
       clearStoredSession();
       showAuth();
       updateStartupStatus("Sign in to start assistant");
-      // Keep VOICE_AUTH_READY pending. It will resolve immediately after a
-      // successful email/password or Google login, without a page reload.
+      // Keep VOICE_AUTH_READY pending. It resolves after a successful login.
+      return;
+    }
+
+    const cachedUser = knownUser || readCachedUser();
+    const cachedConversationId = localStorage.getItem(CONVERSATION_KEY);
+    const forceLatest = localStorage.getItem(SELECT_LATEST_ON_BOOT_KEY) === "1";
+
+    // Returning users should see the app immediately on mobile. Verify the
+    // token/conversation with the server in the background while the WebSocket
+    // is already waking/connecting.
+    if (cachedUser && cachedConversationId && !forceLatest && !authResultPublished) {
+      activeConversationId = cachedConversationId;
+      knownConversations = [];
+      configureAuthenticatedWebSocket(token, cachedConversationId);
+      renderAuthenticatedSidebar(cachedUser, [], cachedConversationId);
+      bindPersistentClearButton();
+      updateStartupStatus("Connecting assistant...");
+      publishAuthResult(true, cachedUser, cachedConversationId);
+      refreshOptimisticSession(token, cachedUser, cachedConversationId);
       return;
     }
 
@@ -564,9 +648,6 @@
 
     while (true) {
       try {
-        // Conversations can load in parallel with /me. After a fresh login we
-        // already trust the user object returned by the authenticated endpoint,
-        // so /me can be skipped entirely.
         const [me, data] = await Promise.all([
           knownUser ? Promise.resolve({ user: knownUser }) : api("/api/auth/me"),
           api("/api/conversations"),
@@ -588,8 +669,6 @@
         updateStartupStatus("Starting assistant...");
         publishAuthResult(true, me.user, active);
 
-        // Conversation history is useful but it should not block the application
-        // from opening or the authenticated WebSocket from connecting.
         renderHistoryMessages(active).catch((err) => {
           console.warn("Conversation history load delayed:", err);
         });
