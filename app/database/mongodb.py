@@ -169,7 +169,7 @@ def create_conversation(user_id: str, title: str = "New conversation") -> Dict[s
     doc = {
         "user_id": user_id,
         "title": (title or "New conversation").strip()[:80],
-        "description": "",
+        "ai_title_generated": False,
         "created_at": now,
         "updated_at": now,
     }
@@ -201,13 +201,35 @@ def list_conversations(user_id: str, limit: int = 50) -> List[Dict[str, Any]]:
     return [_serialize(doc) or {} for doc in cursor]
 
 
+def _derive_ai_title(text: str) -> str:
+    """Create a short history title from the assistant's own first response."""
+    clean = re.sub(r"[*_`#>]+", " ", text or "")
+    clean = " ".join(clean.split()).strip()
+    clean = re.sub(
+        r"^(sure|of course|absolutely|certainly|okay|ok|here(?:'s| is))[,!:\-\s]+",
+        "",
+        clean,
+        flags=re.IGNORECASE,
+    )
+    if not clean:
+        return "New conversation"
+
+    first_sentence = re.split(r"[.!?]", clean, maxsplit=1)[0].strip(" \t\n\r:;-")
+    words = first_sentence.split()
+    if len(words) > 8:
+        first_sentence = " ".join(words[:8])
+
+    title = first_sentence[:60].strip(" \t\n\r:;,-")
+    return title or "New conversation"
+
+
 def _maybe_update_conversation_metadata(
     user_id: str,
     conversation_id: str,
     role: str,
     text: str,
 ) -> None:
-    """Keep the conversation title and a compact AI-created description in sync."""
+    """Update activity time and create the title from the first AI response."""
     db = get_database()
     try:
         oid = _oid(conversation_id)
@@ -218,23 +240,19 @@ def _maybe_update_conversation_metadata(
     if not conversation:
         return
 
-    clean = " ".join((text or "").strip().split())
     update: Dict[str, Any] = {"updated_at": _now()}
 
-    if role == "user" and conversation.get("title") in (None, "", "New conversation"):
-        if clean:
-            update["title"] = clean[:60] + ("…" if len(clean) > 60 else "")
-
-    if role == "assistant" and not conversation.get("description"):
-        if clean:
-            # The description is taken from the AI's own first response, so it
-            # requires no additional model request and adds no extra chat latency.
-            description = clean[:115]
-            update["description"] = description + ("…" if len(clean) > 115 else "")
+    if role == "assistant" and not conversation.get("ai_title_generated", False):
+        update["title"] = _derive_ai_title(text)
+        update["ai_title_generated"] = True
+        update.pop("description", None)
 
     db.conversations.update_one(
         {"_id": oid, "user_id": user_id},
-        {"$set": update},
+        {
+            "$set": update,
+            "$unset": {"description": ""},
+        },
     )
 
 
