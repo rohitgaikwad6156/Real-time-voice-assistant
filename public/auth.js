@@ -65,8 +65,15 @@
 
   function publishAuthResult(authenticated, user = null, conversationId = null) {
     if (authResultPublished) return;
-    authResultPublished = true;
 
+    // Keep the login screen visible until the authenticated app state is fully
+    // ready. Removing it earlier can expose a blank/dark mobile page while the
+    // sidebar/WebSocket configuration is still being created.
+    if (authenticated) {
+      document.querySelector(".auth-overlay")?.remove();
+    }
+
+    authResultPublished = true;
     window.VOICE_AUTH_STATE = {
       ready: true,
       authenticated,
@@ -274,8 +281,11 @@
     localStorage.setItem(TOKEN_KEY, result.access_token);
     localStorage.setItem(USER_KEY, JSON.stringify(result.user));
 
-    const overlay = document.querySelector(".auth-overlay");
-    if (overlay) overlay.remove();
+    // Do not remove the auth overlay yet. It is removed by publishAuthResult()
+    // only after the authenticated UI state has been configured successfully.
+    // This prevents the black-screen gap seen on slower mobile browsers.
+    const googleStatus = document.getElementById("googleAuthStatus");
+    if (googleStatus) googleStatus.textContent = "Opening assistant...";
     updateStartupStatus("Opening your account...");
 
     // If the main app was already authenticated and later expired, a reload is
