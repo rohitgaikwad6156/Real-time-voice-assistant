@@ -68,16 +68,7 @@ def get_weather(
     Returns:
         Structured dictionary containing live weather metrics or error details.
     """
-    # 1. Check API key configuration
-    api_key = _get_api_key()
-    if not api_key:
-        logger.warning("get_weather invoked without WEATHER_API_KEY configured.")
-        return {
-            "status": "error",
-            "error": "Weather API key is not configured. Please set WEATHER_API_KEY in your .env file or environment.",
-        }
-
-    # 2. Validate city parameter
+    # 1. Validate city parameter before any provider/config checks.
     raw_city = city or location
     if not raw_city or not isinstance(raw_city, str) or not raw_city.strip():
         return {
@@ -101,13 +92,21 @@ def get_weather(
             }
 
     provider = _get_api_provider()
+    api_key = _get_api_key()
 
-    # 4. Fetch live weather according to configured provider
+    # 4. Fetch live weather according to configured provider.
+    # Open-Meteo is public and does not require an API key.
+    if provider == "openweathermap" and not api_key:
+        logger.warning("OpenWeatherMap selected without WEATHER_API_KEY configured.")
+        return {
+            "status": "error",
+            "error": "WEATHER_API_KEY is required when WEATHER_API_PROVIDER=openweathermap.",
+        }
+
     try:
-        if provider == "openweathermap" and api_key not in ("open-meteo", "free_public_access", "public"):
+        if provider == "openweathermap":
             return _fetch_openweathermap(clean_city, clean_unit, api_key, timeout)
-        else:
-            return _fetch_open_meteo(clean_city, clean_unit, timeout)
+        return _fetch_open_meteo(clean_city, clean_unit, timeout)
 
     except httpx.TimeoutException:
         logger.error("Weather API request timed out after %s seconds for city '%s'.", timeout, clean_city)
