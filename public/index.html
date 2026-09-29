@@ -7,6 +7,7 @@
   <title>Real-Time AI Voice Assistant</title>
   <link rel="preconnect" href="https://accounts.google.com">
   <link rel="preconnect" href="https://real-time-voice-assistant-9bh1.onrender.com" crossorigin>
+  <script id="google-identity-services" src="https://accounts.google.com/gsi/client" async defer></script>
   <link rel="stylesheet" href="/style.css?v=3.5">
 </head>
 <body>
@@ -200,9 +201,9 @@
         }
       }
 
-      // Give the small auth assets priority on slower mobile connections, then
-      // wake Render in the background without blocking the login UI.
-      setTimeout(() => warmBackendInBackground().catch(() => {}), 700);
+      // Wake Render immediately in parallel with the login UI. Requests use a
+      // different origin, so this does not block Vercel auth assets.
+      warmBackendInBackground().catch(() => {});
       initializeAuthenticatedFrontendOnce().catch((error) => {
         console.error("[Startup] Unexpected boot error:", error);
         updateStartupUI("Startup interrupted — retrying...");
