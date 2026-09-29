@@ -1,6 +1,7 @@
 import logging
 import os
 import re
+import threading
 from uuid import uuid4
 from pathlib import Path
 from typing import Optional
@@ -39,6 +40,40 @@ from app.services.rate_limiter import rate_limiter
 logging.getLogger(__name__).info("Google OAuth client configured: %s", bool(get_google_client_id()))
 
 app = FastAPI(title="AI Voice Assistant Backend", version="2.1.0")
+
+_voice_runtime_warmup_started = False
+_voice_runtime_warmup_lock = threading.Lock()
+
+
+def _voice_runtime_warmup_worker() -> None:
+    """Pre-import Gemini/WebSocket code after the HTTP service is already awake."""
+    global _voice_runtime_warmup_started
+    try:
+        from app.services import session_manager as _session_manager  # noqa: F401
+        logging.getLogger(__name__).info("Voice runtime warmup complete.")
+    except Exception as exc:
+        logging.getLogger(__name__).warning(
+            "Voice runtime warmup failed: %s", type(exc).__name__
+        )
+    finally:
+        with _voice_runtime_warmup_lock:
+            _voice_runtime_warmup_started = False
+
+
+def start_voice_runtime_warmup() -> None:
+    """Warm the heavy Gemini voice imports without delaying /health."""
+    global _voice_runtime_warmup_started
+
+    with _voice_runtime_warmup_lock:
+        if _voice_runtime_warmup_started:
+            return
+        _voice_runtime_warmup_started = True
+
+    threading.Thread(
+        target=_voice_runtime_warmup_worker,
+        name="voice-runtime-warmup",
+        daemon=True,
+    ).start()
 
 # Cold-start work runs concurrently with Uvicorn startup. Authentication requests
 # can then reuse warm MongoDB and cached Google signing keys.
@@ -160,8 +195,9 @@ def home():
 
 @app.get("/health")
 def health():
-    # Keep this endpoint intentionally lightweight so Render cold-start polling
-    # does not also block on the first MongoDB connection.
+    # Return immediately, but use the frontend's wake-up request to pre-import
+    # the Gemini/WebSocket runtime in the background before the socket connects.
+    start_voice_runtime_warmup()
     return {"status": "ok"}
 
 
