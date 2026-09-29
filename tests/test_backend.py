@@ -185,7 +185,8 @@ class TestWeatherValidation:
     """Tests for get_weather() input validation -- all validation paths return before HTTP call."""
 
     def test_missing_api_key_returns_error(self, monkeypatch):
-        """When WEATHER_API_KEY is absent the tool must return a structured error."""
+        """OpenWeatherMap must reject calls when WEATHER_API_KEY is absent."""
+        monkeypatch.setenv("WEATHER_API_PROVIDER", "openweathermap")
         monkeypatch.setenv("WEATHER_API_KEY", "")
         from app.tools.weather import get_weather
         result = get_weather(city="London")
