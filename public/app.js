@@ -303,6 +303,13 @@ function initializeAudioSubsystem() {
 }
 
 async function ensureAudioPlayerReady() {
+  if (typeof window.AudioPlayer !== "function" || typeof window.AudioStreamer !== "function") {
+    if (typeof window.VOICE_LOAD_AUDIO_DEPENDENCIES !== "function") {
+      throw new Error("Audio support is unavailable.");
+    }
+    await window.VOICE_LOAD_AUDIO_DEPENDENCIES();
+  }
+
   const player = getOrCreateAudioPlayer();
   if (!player) throw new Error("Audio player is still loading. Please try again.");
   try {
@@ -966,7 +973,8 @@ function initializeApplication() {
 
   bindDomElements();
   bindEventListeners();
-  initializeAudioSubsystem();
+  // Audio code is intentionally lazy-loaded on the user's first voice/text
+  // interaction so mobile page/auth startup stays lightweight.
   initWaveform();
   syncTurnCountFromDom();
 
