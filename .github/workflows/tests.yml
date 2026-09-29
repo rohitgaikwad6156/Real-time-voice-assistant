@@ -22,5 +22,12 @@ jobs:
         run: pip install -r requirements.txt
       - name: Compile backend
         run: python -m compileall -q app
+      - name: Check frontend JavaScript syntax
+        run: |
+          node --check public/auth.js
+          node --check public/google-auth.js
+          node --check public/app.js
+          node --check public/audio-streamer.js
+          node --check public/audio-player.js
       - name: Run deterministic tests
         run: pytest -m "not integration"
